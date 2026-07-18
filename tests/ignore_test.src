@@ -1,0 +1,23 @@
+// .glaneignore rules + binary-extension sniff.
+
+func main() {
+    pats := []string{"*.log", "build/", "secret.txt", "node_modules"}
+    assert(ignored("app.log", pats), "*.log suffix matches")
+    assert(ignored("deep/dir/app.log", pats), "*.log matches nested")
+    assert(ignored("build/out.txt", pats), "dir/ prefix matches")
+    assert(ignored("build", pats) == false, "dir/ does not match the bare file name")
+    assert(ignored("secret.txt", pats), "exact path matches")
+    assert(ignored("sub/secret.txt", pats), "basename matches nested")
+    assert(ignored("node_modules/x/y.js", pats), "bare name matches as path prefix")
+    assert(ignored("src/main.c", pats) == false, "unrelated path passes")
+    assert(ignored("mybuild/x.txt", pats) == false, "prefix does not bleed across component")
+
+    assert(is_binary_ext("a.png"), "png is binary")
+    assert(is_binary_ext("A.ZIP"), "case-insensitive ext")
+    assert(is_binary_ext("notes.md") == false, "md is text")
+
+    b := bytes_concat(bytes("abc"), from_hex("00"))
+    assert(looks_binary(b), "NUL byte sniffed as binary")
+    assert(looks_binary(bytes("plain text")) == false, "text is not binary")
+    test_summary()
+}

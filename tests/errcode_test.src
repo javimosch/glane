@@ -1,0 +1,47 @@
+// semantic exit codes + typed error JSON, end-to-end against ./glane.
+// Requires the binary: run ./build.sh first (test.sh does).
+
+func run_glane(dir, argstr, stdin) (code, out) {
+    bin := env("GLANE_BIN")
+    if bin == "" { bin = "./glane" }
+    cmd := "cd " + dir + " && " + stdin + " " + bin + " " + argstr
+    c, o, _ := exec(cmd)
+    code = c
+    out = trim(o)
+}
+
+func main() {
+    tmp := "/tmp/glane-err-test-" + str(now_ms())
+    mkdir(tmp)
+
+    c1, o1 := run_glane(tmp, "status", "")
+    assert_eq_int(c1, 81, "status without store -> 81")
+    kind, _ := json_get(o1, ".error.code")
+    assert_eq_str(kind, "\"GLANE_NO_STORE\"", "typed error code on stdout")
+    rec, _ := json_get(o1, ".error.recoverable")
+    assert_eq_str(rec, "true", "recoverable flag present")
+
+    c2, _ := run_glane(tmp, "nosuchcmd", "")
+    assert_eq_int(c2, 80, "unknown command -> 80")
+
+    c3, _ := run_glane(tmp, "init", "")
+    assert_eq_int(c3, 0, "init -> 0")
+    c4, _ := run_glane(tmp, "init", "")
+    assert_eq_int(c4, 82, "double init -> 82")
+
+    c5, _ := run_glane(tmp, "commit", "echo not-json |")
+    assert_eq_int(c5, 83, "garbage stdin commit -> 83")
+
+    c6, _ := run_glane(tmp, "sync /definitely/not/here", "")
+    assert_eq_int(c6, 85, "sync of a missing path -> 85")
+
+    c7, _ := run_glane(tmp, "search q --limit 0", "")
+    assert_eq_int(c7, 83, "limit 0 -> 83")
+
+    // feedback never fails, store or not
+    c8, _ := run_glane(tmp, "feedback works", "")
+    assert_eq_int(c8, 0, "feedback -> 0")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}

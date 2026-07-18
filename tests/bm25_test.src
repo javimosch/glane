@@ -1,0 +1,41 @@
+// tokenizer + BM25 ranking sanity (in-memory store, no disk).
+
+func put_chunk(id, doc, text) {
+    st_chunk_map[id] = len(st_chunks)
+    st_chunks = append(st_chunks, Chunk{id: id, doc: doc, ord: 0, start: 0, end: len(text), text: text})
+}
+
+func main() {
+    toks := tokenize("Hello, WORLD! bm25 k1=1.2")
+    assert_eq_int(len(toks), 6, "token count")
+    assert_eq_str(toks[0], "hello", "lowercased")
+    assert_eq_str(toks[2], "bm25", "alnum run kept together")
+    assert_eq_int(len(tokenize("...!!!")), 0, "punctuation only -> no tokens")
+
+    put_chunk("c1", "a.md", "the deadlock detector watches goroutines and channels for a deadlock cycle")
+    put_chunk("c2", "b.md", "cooking pasta with tomato sauce and basil for dinner tonight yes")
+    put_chunk("c3", "c.md", "a single mention of deadlock among many many other unrelated words here")
+    bm25_build()
+    assert_eq_int(bm_n, 3, "index has 3 chunks")
+
+    hits := bm25_search("deadlock", 10)
+    assert_eq_int(len(hits), 2, "two chunks mention deadlock")
+    assert_eq_str(hits[0].chunk, "c1", "higher tf ranks first")
+    assert(hits[0].score > hits[1].score, "scores strictly ordered")
+    for _, h := range hits { assert(h.doc != "b.md", "pasta doc not returned") }
+
+    // a term in every chunk scores low but non-negative; a rare term dominates
+    mixed := bm25_search("basil deadlock", 10)
+    assert_eq_int(len(mixed), 3, "union of query terms")
+
+    // limit respected
+    lim := bm25_search("deadlock", 1)
+    assert_eq_int(len(lim), 1, "limit trims results")
+
+    // snippet contains the term
+    assert(contains(to_lower(hits[0].snippet), "deadlock"), "snippet centered on the hit")
+
+    // no hits for unknown terms
+    assert_eq_int(len(bm25_search("zzzunknownzzz", 5)), 0, "unknown term -> empty")
+    test_summary()
+}

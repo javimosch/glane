@@ -1,0 +1,50 @@
+// chunk determinism + markdown-aware splitting + windowing.
+
+func main() {
+    // determinism: same text -> same ids, twice
+    md := "# Title\n\nintro paragraph text\n\n## Second\n\nbody of the second section\n"
+    a := chunk_text("x.md", md)
+    b := chunk_text("x.md", md)
+    assert_eq_int(len(a), len(b), "same chunk count on re-chunk")
+    assert(len(a) == 2, "md splits on headings (got " + str(len(a)) + ")")
+    i := 0
+    while i < len(a) {
+        assert_eq_str(a[i].id, b[i].id, "chunk id stable " + str(i))
+        assert_eq_str(a[i].id, sha256(a[i].text), "id is sha256 of text " + str(i))
+        i = i + 1
+    }
+    // spans tile the doc
+    assert_eq_int(a[0].start, 0, "first span starts at 0")
+    assert_eq_int(a[len(a) - 1].end, len(md), "last span ends at doc end")
+    assert_eq_int(a[1].start, a[0].end, "spans are contiguous")
+    // ord numbering
+    assert_eq_int(a[0].ord, 0, "ord 0")
+    assert_eq_int(a[1].ord, 1, "ord 1")
+
+    // non-markdown: windowed at ~2000 bytes on line boundaries
+    line := "0123456789012345678901234567890123456789012345678901234567890123456789012345678\n"
+    big := ""
+    n := 0
+    while n < 60 { big = big + line  n = n + 1 }
+    w := chunk_text("big.txt", big)
+    assert(len(w) > 1, "long text splits into windows")
+    for _, c := range w {
+        assert(len(c.text) <= 2000, "window <= 2000 bytes")
+        assert(has_suffix(c.text, "\n"), "window cuts on a line boundary")
+    }
+    total := 0
+    for _, c2 := range w { total = total + len(c2.text) }
+    assert_eq_int(total, len(big), "windows cover the whole doc")
+
+    // a single line longer than the window is hard-cut, not dropped
+    huge := ""
+    m := 0
+    while m < 3000 { huge = huge + "x"  m = m + 1 }
+    h := chunk_text("huge.txt", huge)
+    assert(len(h) == 2, "3000-byte single line -> 2 chunks")
+    assert_eq_int(len(h[0].text), 2000, "hard cut at window size")
+
+    // empty text -> no chunks
+    assert_eq_int(len(chunk_text("e.md", "")), 0, "empty doc yields no chunks")
+    test_summary()
+}

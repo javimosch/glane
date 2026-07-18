@@ -1,0 +1,52 @@
+// store round-trip + incremental chunk skip, in a throwaway dir.
+
+func main() {
+    tmp := "/tmp/glane-store-test-" + str(now_ms())
+    mkdir(tmp)
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_init(), 0, "init on fresh dir")
+    assert_eq_int(store_init(), 82, "second init -> 82 exists")
+
+    d1 := Doc{path: "a.md", sha256: "s1", bytes: 10, mtime: 1}
+    docs := []Doc{}
+    docs = append(docs, d1)
+    chunks := []Chunk{}
+    chunks = append(chunks, Chunk{id: "id1", doc: "a.md", ord: 0, start: 0, end: 5, text: "hello"})
+    chunks = append(chunks, Chunk{id: "id2", doc: "a.md", ord: 1, start: 5, end: 10, text: "world"})
+    s1, e1 := store_commit(docs, chunks, "test")
+    assert_eq_int(e1, 0, "commit ok")
+    assert_eq_int(s1.gen, 1, "first gen is 1")
+    assert_eq_int(s1.chunks_new, 2, "two new chunks")
+    assert_eq_int(s1.docs_changed, 1, "one doc changed")
+
+    // same chunks again -> all skipped (incremental for free)
+    s2, _ := store_commit(docs, chunks, "test")
+    assert_eq_int(s2.chunks_new, 0, "known chunk ids skipped")
+    assert_eq_int(s2.docs_changed, 0, "unchanged sha skipped")
+    assert_eq_int(s2.chunks_total, 2, "total stays 2")
+
+    // reload from disk in a fresh process-state: everything survives
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_load(), 0, "reload ok")
+    assert_eq_int(len(st_chunks), 2, "chunks persisted")
+    assert_eq_int(len(st_docs), 1, "docs persisted")
+    assert_eq_int(st_gen, 2, "gen persisted")
+    assert_eq_str(st_chunks[0].text, "hello", "chunk text round-trips")
+
+    // search works straight off the persisted postings file
+    hits := bm25_search("world", 5)
+    assert_eq_int(len(hits), 1, "search over persisted index")
+    assert_eq_str(hits[0].chunk, "id2", "right chunk found")
+
+    // doc update: changed sha replaces the row, latest wins on reload
+    docs[0] = Doc{path: "a.md", sha256: "s2", bytes: 12, mtime: 2}
+    s3, _ := store_commit(docs, []Chunk{}, "test")
+    assert_eq_int(s3.docs_changed, 1, "new sha counts as changed")
+    store_reset(tmp + "/.glane")
+    store_load()
+    assert_eq_int(len(st_docs), 1, "still one doc row after update")
+    assert_eq_str(st_docs[0].sha256, "s2", "latest doc row wins")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}
