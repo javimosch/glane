@@ -1,0 +1,90 @@
+// glane — chunk: split docs into content-addressed chunks.
+// id = sha256(chunk text). Markdown splits on headings; oversized pieces
+// (and non-markdown docs) fall to ~2000-byte windows cut on line boundaries.
+
+type Chunk struct { id string  doc string  ord int  start int  end int  text string }
+type ChunkSet struct { docs []Doc  chunks []Chunk }
+
+var chunk_window = 2000
+
+func is_markdown(p) (yes) {
+    lp := to_lower(p)
+    yes = has_suffix(lp, ".md") || has_suffix(lp, ".markdown")
+}
+
+// window_piece splits text[base..] into <=chunk_window-byte windows, cutting on
+// the last newline inside the window (hard cut if a line exceeds the window).
+func window_piece(doc, text, base, acc) (out) {
+    out = acc
+    n := len(text)
+    pos := 0
+    while pos < n {
+        end := pos + chunk_window
+        if end >= n {
+            end = n
+        } else {
+            // back up to the last newline within (pos, end]
+            cut := end
+            while cut > pos && charat(text, cut - 1) != "\n" { cut = cut - 1 }
+            if cut > pos { end = cut }
+        }
+        piece := substr(text, pos, end)
+        if trim(piece) != "" {
+            out = append(out, Chunk{id: sha256(piece), doc: doc, ord: 0, start: base + pos, end: base + end, text: piece})
+        }
+        pos = end
+    }
+}
+
+// chunk_text splits one doc's text into chunks (ord numbered at the end).
+func chunk_text(doc, text) (out) {
+    out = []Chunk{}
+    if len(text) == 0 { return }
+    if is_markdown(doc) {
+        // walk lines, closing a section at each heading line
+        secstart := 0
+        pos := 0
+        n := len(text)
+        while pos < n {
+            eol := index(substr(text, pos, n), "\n")
+            lineend := n
+            if eol >= 0 { lineend = pos + eol + 1 }
+            line := substr(text, pos, lineend)
+            if has_prefix(line, "#") && pos > secstart {
+                out = window_piece(doc, substr(text, secstart, pos), secstart, out)
+                secstart = pos
+            }
+            pos = lineend
+        }
+        if secstart < n { out = window_piece(doc, substr(text, secstart, n), secstart, out) }
+    } else {
+        out = window_piece(doc, text, 0, out)
+    }
+    i := 0
+    while i < len(out) { out[i].ord = i  i = i + 1 }
+}
+
+// chunk_docs chunks every doc in a manifest by reading it from disk.
+func chunk_docs(docs) (cs) {
+    all := []Chunk{}
+    for _, d := range docs {
+        text := read_file(d.path)
+        for _, c := range chunk_text(d.path, text) { all = append(all, c) }
+    }
+    cs = ChunkSet{docs: docs, chunks: all}
+}
+
+// cmd_chunk reads a manifest (stdin, or --from-scan <path>) -> chunk set JSON.
+func cmd_chunk(fromscan) {
+    raw := ""
+    if fromscan != "" {
+        docs0, err := scan_dir(fromscan)
+        if err != 0 { fail(85, "GLANE_NOT_FOUND", "path not found: " + fromscan, true, []string{}) }
+        println(json(chunk_docs(docs0)))
+        return
+    }
+    raw = read_stdin()
+    if trim(raw) == "" { fail(83, "GLANE_BAD_INPUT", "expected a scan manifest JSON on stdin (or use --from-scan <path>)", true, []string{"glane scan <path> | glane chunk"}) }
+    m := parse(raw, Manifest{})
+    println(json(chunk_docs(m.docs)))
+}
