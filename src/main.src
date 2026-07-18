@@ -23,12 +23,18 @@ func cmd_sync(path) {
     changed := []Doc{}
     for _, d := range docs {
         prev := ""
-        if has(st_doc_map, d.path) { prev = st_docs[st_doc_map[d.path]].sha256 }
-        if prev != d.sha256 { changed = append(changed, d) }
+        prevdel := 1
+        if has(st_doc_map, d.path) {
+            prev = st_docs[st_doc_map[d.path]].sha256
+            prevdel = st_docs[st_doc_map[d.path]].deleted
+        }
+        if prev != d.sha256 || prevdel != 0 { changed = append(changed, d) }
     }
     progress("sync: " + str(len(docs)) + " docs seen, " + str(len(changed)) + " changed")
     cs := chunk_docs(changed)
-    stats, cerr := store_commit(docs, cs.chunks, "sync")
+    nodes, edges := extract_chunks(cs.chunks)
+    progress("extract: " + str(len(nodes)) + " nodes, " + str(len(edges)) + " edges from " + str(len(cs.chunks)) + " new chunks")
+    stats, cerr := store_commit(docs, cs.chunks, nodes, edges, "sync")
     if cerr != 0 { fail(84, "GLANE_IO", "commit failed", false, []string{}) }
     stats.ms = now_ms() - t0
     println(json(stats))
@@ -38,19 +44,31 @@ func cmd_commit() {
     if store_exists() == false { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
     t0 := now_ms()
     raw := trim(read_stdin())
-    if raw == "" || has_prefix(raw, "{") == false { fail(83, "GLANE_BAD_INPUT", "expected chunk-set JSON ({docs,chunks}) on stdin", true, []string{"glane scan <path> | glane chunk | glane commit"}) }
-    cs := parse(raw, ChunkSet{})
-    if len(cs.docs) == 0 && len(cs.chunks) == 0 { fail(83, "GLANE_BAD_INPUT", "chunk-set JSON had no docs and no chunks", true, []string{"pipe the output of `glane chunk`"}) }
-    stats, cerr := store_commit(cs.docs, cs.chunks, "commit")
+    if raw == "" || has_prefix(raw, "{") == false { fail(83, "GLANE_BAD_INPUT", "expected extract/chunk-set JSON ({docs,chunks[,nodes,edges]}) on stdin", true, []string{"glane scan <path> | glane chunk | glane extract | glane commit"}) }
+    b := parse(raw, ExtractBundle{})
+    if len(b.docs) == 0 && len(b.chunks) == 0 && len(b.nodes) == 0 && len(b.edges) == 0 {
+        fail(83, "GLANE_BAD_INPUT", "bundle JSON had no docs, chunks, nodes, or edges", true, []string{"pipe the output of `glane extract` or `glane chunk`"})
+    }
+    // if graph missing, extract from the chunks being committed
+    nodes := b.nodes
+    edges := b.edges
+    if len(nodes) == 0 && len(edges) == 0 && len(b.chunks) > 0 {
+        nodes, edges = extract_chunks(b.chunks)
+    }
+    stats, cerr := store_commit(b.docs, b.chunks, nodes, edges, "commit")
     if cerr != 0 { fail(84, "GLANE_IO", "commit failed", false, []string{}) }
     stats.ms = now_ms() - t0
     println(json(stats))
 }
 
-func cmd_search(query, limit) {
+func cmd_search(query, limit, mode) {
     lerr := store_load()
     if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
-    hits := bm25_search(query, limit)
+    hits, err := search_dispatch(query, limit, mode)
+    if err == 89 { fail(89, "GLANE_NO_VECTORS", "no vectors cached; run `glane embed` first (max 10, localhost)", true, []string{"glane embed --limit 10"}) }
+    if err == 88 { fail(88, "GLANE_EMBED", "query embedding failed (localhost embed endpoint)", true, []string{"curl -s http://127.0.0.1:8095/health"}) }
+    if err == 83 { fail(83, "GLANE_BAD_INPUT", "--mode must be lexical, semantic, or hybrid", true, []string{}) }
+    if err != 0 { fail(84, "GLANE_IO", "search failed", false, []string{}) }
     println(results_json(hits))
 }
 
@@ -66,7 +84,7 @@ func usage_fail(msg) {
 
 func main() {
     a := args()
-    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|commit|sync|search|status|bench|guide|help-json|version|feedback>") }
+    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|status|bench|guide|help-json|version|feedback>") }
     cmd := a[1]
     if cmd == "version" { cmd_version()  return }
     if cmd == "help-json" { cmd_help_json()  return }
@@ -91,15 +109,32 @@ func main() {
         cmd_chunk(fromscan)
         return
     }
+    if cmd == "extract" { cmd_extract()  return }
     if cmd == "commit" { cmd_commit()  return }
     if cmd == "sync" {
         if len(a) < 3 { usage_fail("usage: glane sync <path>") }
         cmd_sync(norm_path(a[2]))
         return
     }
+    if cmd == "embed" {
+        limit := EMBED_HARD_MAX
+        i0 := 2
+        while i0 < len(a) {
+            if a[i0] == "--limit" {
+                if i0 + 1 >= len(a) { usage_fail("--limit needs a number") }
+                limit = parse_int(a[i0 + 1])
+                i0 = i0 + 2
+                continue
+            }
+            usage_fail("usage: glane embed [--limit N]  (N <= " + str(EMBED_HARD_MAX) + ", localhost only)")
+        }
+        cmd_embed(limit)
+        return
+    }
     if cmd == "search" {
-        if len(a) < 3 { usage_fail("usage: glane search <query> [--limit N]") }
+        if len(a) < 3 { usage_fail("usage: glane search <query> [--limit N] [--mode lexical|semantic|hybrid]") }
         limit := 10
+        mode := "lexical"
         query := a[2]
         i := 3
         while i < len(a) {
@@ -110,10 +145,21 @@ func main() {
                 i = i + 2
                 continue
             }
+            if a[i] == "--mode" {
+                if i + 1 >= len(a) { usage_fail("--mode needs lexical|semantic|hybrid") }
+                mode = a[i + 1]
+                i = i + 2
+                continue
+            }
             query = query + " " + a[i]
             i = i + 1
         }
-        cmd_search(query, limit)
+        cmd_search(query, limit, mode)
+        return
+    }
+    if cmd == "query" {
+        if len(a) < 3 { usage_fail("usage: glane query <neighbors|path|subgraph> ...") }
+        cmd_query(a[2], a, 3)
         return
     }
     if cmd == "bench" {

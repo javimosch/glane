@@ -2,7 +2,7 @@
 // One `find` process does the walk (paths + size + mtime in one shot);
 // filtering (.glaneignore, binary sniff) and ordering happen in MFL.
 
-type Doc struct { path string  sha256 string  bytes int  mtime int }
+type Doc struct { path string  sha256 string  bytes int  mtime int  gen int  deleted int }
 type Manifest struct { docs []Doc }
 
 // binary extensions skipped without reading the file.

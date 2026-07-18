@@ -1,0 +1,183 @@
+// glane — vector: int8 cache search + hybrid RRF with BM25.
+// Vectors are a rebuildable cache (rm vectors.jsonl loses nothing of truth).
+
+type VecRec struct { id string  dim int  q []int }
+
+var st_vecs = []VecRec{}
+var st_vec_map = make(map[string]int)
+var st_vec_dim = 0
+
+func vec_reset() {
+    st_vecs = []VecRec{}
+    st_vec_map = make(map[string]int)
+    st_vec_dim = 0
+}
+
+func apply_vec_row(v) {
+    if has(st_vec_map, v.id) {
+        st_vecs[st_vec_map[v.id]] = v
+    } else {
+        st_vec_map[v.id] = len(st_vecs)
+        st_vecs = append(st_vecs, v)
+    }
+    if st_vec_dim == 0 { st_vec_dim = v.dim }
+}
+
+// store_add_vectors appends new vector rows (skips ids already present).
+func store_add_vectors(recs) {
+    lines := []string{}
+    for _, v := range recs {
+        if has(st_vec_map, v.id) { continue }
+        apply_vec_row(v)
+        lines = append(lines, json(v) + "\n")
+    }
+    append_lines(st_dir + "/vectors.jsonl", join(lines, ""))
+}
+
+func live_vec_count() (n) {
+    n = 0
+    for _, v := range st_vecs {
+        if has(st_chunk_map, v.id) == false { continue }
+        c := st_chunks[st_chunk_map[v.id]]
+        if doc_is_deleted(c.doc) { continue }
+        n = n + 1
+    }
+}
+
+// cosine_i8: dot(q,v) / (127*127) ≈ cosine for unit vectors quantized at scale 127.
+func cosine_i8(qa, qb) (score) {
+    score = 0.0
+    if len(qa) == 0 || len(qa) != len(qb) { return }
+    pa := pack_i8(qa)
+    pb := pack_i8(qb)
+    d := dot_i8(pa, pb, len(qa))
+    free(pa)
+    free(pb)
+    score = float(d) / (127.0 * 127.0)
+}
+
+// semantic_search: brute-force int8 cosine over cached vectors.
+func semantic_search(query, limit) (hits, err) {
+    hits = []SearchHit{}
+    err = 0
+    if live_vec_count() == 0 { err = 89  return }
+    texts := []string{}
+    texts = append(texts, embed_text(query))
+    dim := st_vec_dim
+    if dim < 1 { dim = embed_dim() }
+    vecs, _, ferr := embed_fetch(texts, dim)
+    if ferr != 0 { err = 88  return }
+    q := quantize_f32_i8(vecs[0].v)
+    // score all live vectors
+    scores := make(map[int]float)
+    touched := []int{}
+    i := 0
+    while i < len(st_vecs) {
+        v := st_vecs[i]
+        if has(st_chunk_map, v.id) == false { i = i + 1  continue }
+        c := st_chunks[st_chunk_map[v.id]]
+        if doc_is_deleted(c.doc) { i = i + 1  continue }
+        if v.dim != len(q) { i = i + 1  continue }
+        scores[i] = cosine_i8(q, v.q)
+        touched = append(touched, i)
+        i = i + 1
+    }
+    picked := make(map[int]int)
+    count := 0
+    while count < limit {
+        best := -1
+        for _, vi := range touched {
+            if has(picked, vi) { continue }
+            if best < 0 || scores[vi] > scores[best] || (scores[vi] == scores[best] && vi < best) { best = vi }
+        }
+        if best < 0 { break }
+        picked[best] = 1
+        count = count + 1
+        v2 := st_vecs[best]
+        c2 := st_chunks[st_chunk_map[v2.id]]
+        sspan := []int{}
+        sspan = append(sspan, c2.start)
+        sspan = append(sspan, c2.end)
+        qtoks := tokenize(query)
+        hits = append(hits, SearchHit{chunk: v2.id, doc: c2.doc, score: scores[best], span: sspan, snippet: snippet_for(c2.text, qtoks)})
+    }
+}
+
+// rrf_add folds one ranked list into RRF score maps.
+func rrf_add(list, scores, meta, order) (order_out) {
+    order_out = order
+    k := 60.0
+    r := 0
+    while r < len(list) {
+        h := list[r]
+        id := h.chunk
+        if has(scores, id) == false {
+            order_out = append(order_out, id)
+            meta[id] = h
+        }
+        scores[id] = scores[id] + 1.0 / (k + float(r + 1))
+        r = r + 1
+    }
+}
+
+// rrf_top picks top-limit ids by RRF score.
+func rrf_top(scores, meta, order, limit) (hits) {
+    hits = []SearchHit{}
+    picked := make(map[string]int)
+    count := 0
+    while count < limit && count < len(order) {
+        best := ""
+        for _, id := range order {
+            if has(picked, id) { continue }
+            if best == "" || scores[id] > scores[best] || (scores[id] == scores[best] && id < best) { best = id }
+        }
+        if best == "" { break }
+        picked[best] = 1
+        count = count + 1
+        h2 := meta[best]
+        h2.score = scores[best]
+        hits = append(hits, h2)
+    }
+}
+
+// hybrid_search: BM25 + semantic → RRF. Falls back to lexical if no vectors.
+func hybrid_search(query, limit) (hits, err) {
+    hits = []SearchHit{}
+    err = 0
+    lex := bm25_search(query, limit)
+    if live_vec_count() == 0 {
+        hits = lex
+        return
+    }
+    sem, serr := semantic_search(query, limit)
+    if serr == 88 { err = 88  return }
+    if serr != 0 {
+        hits = lex
+        return
+    }
+    scores := make(map[string]float)
+    meta := make(map[string]SearchHit)
+    order := []string{}
+    order = rrf_add(lex, scores, meta, order)
+    order = rrf_add(sem, scores, meta, order)
+    hits = rrf_top(scores, meta, order, limit)
+}
+
+// search_dispatch runs lexical | semantic | hybrid.
+func search_dispatch(query, limit, mode) (hits, err) {
+    hits = []SearchHit{}
+    err = 0
+    if mode == "" || mode == "lexical" {
+        hits = bm25_search(query, limit)
+        return
+    }
+    if mode == "semantic" {
+        hits, err = semantic_search(query, limit)
+        return
+    }
+    if mode == "hybrid" {
+        hits, err = hybrid_search(query, limit)
+        return
+    }
+    err = 83
+}

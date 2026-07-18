@@ -1,4 +1,4 @@
-// store round-trip + incremental chunk skip, in a throwaway dir.
+// store round-trip + incremental chunk skip + doc tombstones.
 
 func main() {
     tmp := "/tmp/glane-store-test-" + str(now_ms())
@@ -7,20 +7,22 @@ func main() {
     assert_eq_int(store_init(), 0, "init on fresh dir")
     assert_eq_int(store_init(), 82, "second init -> 82 exists")
 
-    d1 := Doc{path: "a.md", sha256: "s1", bytes: 10, mtime: 1}
+    d1 := Doc{path: "a.md", sha256: "s1", bytes: 10, mtime: 1, gen: 0, deleted: 0}
     docs := []Doc{}
     docs = append(docs, d1)
     chunks := []Chunk{}
     chunks = append(chunks, Chunk{id: "id1", doc: "a.md", ord: 0, start: 0, end: 5, text: "hello"})
     chunks = append(chunks, Chunk{id: "id2", doc: "a.md", ord: 1, start: 5, end: 10, text: "world"})
-    s1, e1 := store_commit(docs, chunks, "test")
+    empty_n := []Node{}
+    empty_e := []Edge{}
+    s1, e1 := store_commit(docs, chunks, empty_n, empty_e, "test")
     assert_eq_int(e1, 0, "commit ok")
     assert_eq_int(s1.gen, 1, "first gen is 1")
     assert_eq_int(s1.chunks_new, 2, "two new chunks")
     assert_eq_int(s1.docs_changed, 1, "one doc changed")
 
     // same chunks again -> all skipped (incremental for free)
-    s2, _ := store_commit(docs, chunks, "test")
+    s2, _ := store_commit(docs, chunks, empty_n, empty_e, "test")
     assert_eq_int(s2.chunks_new, 0, "known chunk ids skipped")
     assert_eq_int(s2.docs_changed, 0, "unchanged sha skipped")
     assert_eq_int(s2.chunks_total, 2, "total stays 2")
@@ -39,13 +41,29 @@ func main() {
     assert_eq_str(hits[0].chunk, "id2", "right chunk found")
 
     // doc update: changed sha replaces the row, latest wins on reload
-    docs[0] = Doc{path: "a.md", sha256: "s2", bytes: 12, mtime: 2}
-    s3, _ := store_commit(docs, []Chunk{}, "test")
+    docs[0] = Doc{path: "a.md", sha256: "s2", bytes: 12, mtime: 2, gen: 0, deleted: 0}
+    s3, _ := store_commit(docs, []Chunk{}, empty_n, empty_e, "test")
     assert_eq_int(s3.docs_changed, 1, "new sha counts as changed")
     store_reset(tmp + "/.glane")
     store_load()
     assert_eq_int(len(st_docs), 1, "still one doc row after update")
     assert_eq_str(st_docs[0].sha256, "s2", "latest doc row wins")
+
+    // add a second doc, then commit with only the first remaining -> tombstone
+    docs2 := []Doc{}
+    docs2 = append(docs2, Doc{path: "a.md", sha256: "s2", bytes: 12, mtime: 2, gen: 0, deleted: 0})
+    docs2 = append(docs2, Doc{path: "b.md", sha256: "sb", bytes: 3, mtime: 3, gen: 0, deleted: 0})
+    chunks_b := []Chunk{}
+    chunks_b = append(chunks_b, Chunk{id: "idb", doc: "b.md", ord: 0, start: 0, end: 3, text: "bye"})
+    s4, _ := store_commit(docs2, chunks_b, empty_n, empty_e, "test")
+    assert_eq_int(s4.docs_changed, 1, "b.md added")
+    only_a := []Doc{}
+    only_a = append(only_a, Doc{path: "a.md", sha256: "s2", bytes: 12, mtime: 2, gen: 0, deleted: 0})
+    s5, _ := store_commit(only_a, []Chunk{}, empty_n, empty_e, "test")
+    assert_eq_int(s5.docs_deleted, 1, "b.md tombstoned")
+    assert(doc_is_deleted("b.md"), "b.md reports deleted")
+    // search must not return chunks from tombstoned docs
+    assert_eq_int(len(bm25_search("bye", 5)), 0, "tombstoned doc hidden from search")
 
     _, _, _ := exec("rm -rf " + tmp)
     test_summary()

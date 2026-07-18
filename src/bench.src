@@ -43,19 +43,24 @@ func bench_gen(dir, i, vocab) {
     write_file(dir + "/doc" + str(i) + ".md", join(parts, ""))
 }
 
-type BenchReport struct { docs int  chunks_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int }
+type BenchReport struct { docs int  chunks_total int  nodes_total int  edges_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int }
 
-// bench_sync runs scan->chunk changed->commit against the bench store.
+// bench_sync runs scan->chunk->extract->commit against the bench store.
 func bench_sync(root) (stats) {
     docs, _ := scan_dir(root)
     changed := []Doc{}
     for _, d := range docs {
         prev := ""
-        if has(st_doc_map, d.path) { prev = st_docs[st_doc_map[d.path]].sha256 }
-        if prev != d.sha256 { changed = append(changed, d) }
+        prevdel := 1
+        if has(st_doc_map, d.path) {
+            prev = st_docs[st_doc_map[d.path]].sha256
+            prevdel = st_docs[st_doc_map[d.path]].deleted
+        }
+        if prev != d.sha256 || prevdel != 0 { changed = append(changed, d) }
     }
     cs := chunk_docs(changed)
-    stats, _ = store_commit(docs, cs.chunks, "sync")
+    nodes, edges := extract_chunks(cs.chunks)
+    stats, _ = store_commit(docs, cs.chunks, nodes, edges, "sync")
 }
 
 func cmd_bench(ndocs) {
@@ -106,7 +111,7 @@ func cmd_bench(ndocs) {
     qsort_float(times, 0, len(times) - 1)
     p50 := int(times[9])
     p95 := int(times[18])
-    rep := BenchReport{docs: ndocs, chunks_total: incr.chunks_total, cold_sync_ms: cold_ms, incr_sync_ms: incr_ms, incr_docs_changed: incr.docs_changed, search_queries: 20, search_p50_ms: p50, search_p95_ms: p95}
+    rep := BenchReport{docs: ndocs, chunks_total: incr.chunks_total, nodes_total: incr.nodes_total, edges_total: incr.edges_total, cold_sync_ms: cold_ms, incr_sync_ms: incr_ms, incr_docs_changed: incr.docs_changed, search_queries: 20, search_p50_ms: p50, search_p95_ms: p95}
     store_reset(userdir)
     _, _, _ := exec("rm -rf " + base)
     println(json(rep))

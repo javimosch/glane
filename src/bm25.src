@@ -75,16 +75,66 @@ func bm25_build() {
     bm_loaded = true
 }
 
-// bm25_save rebuilds from chunks and writes postings.json (temp-then-rename).
+// bm25_persist writes the in-memory index (temp-then-rename).
 // Serialized element-wise: json() is quadratic on large slices.
-func bm25_save() {
-    bm25_build()
+func bm25_persist() {
     cparts := []string{}
     for _, c := range bm_chunks { cparts = append(cparts, json(c)) }
     tparts := []string{}
     for _, t := range bm_terms { tparts = append(tparts, "{\"t\":" + json(t.t) + ",\"p\":" + ints_json(t.p) + "}") }
     s := "{\"n\":" + str(bm_n) + ",\"avgdl\":" + str(bm_avgdl) + ",\"chunks\":" + json_arr(cparts) + ",\"terms\":" + json_arr(tparts) + "}"
     write_atomic(st_dir + "/bm25/postings.json", s)
+}
+
+// bm25_save full-rebuilds from st_chunks then persists (fallback / first index).
+func bm25_save() {
+    bm25_build()
+    bm25_persist()
+}
+
+// bm25_add_chunks incrementally extends postings for brand-new chunks.
+// Falls back to a full rebuild if the on-disk index is missing or desynced.
+func bm25_add_chunks(new_chunks) {
+    if len(new_chunks) == 0 { return }
+    bm25_ensure()
+    // desync: postings chunk count should equal store chunk count minus the batch
+    if bm_n != len(st_chunks) - len(new_chunks) {
+        bm25_save()
+        return
+    }
+    total_tokens := int(bm_avgdl * float(bm_n))
+    for _, c := range new_chunks {
+        ci := bm_n
+        toks := tokenize(c.text)
+        total_tokens = total_tokens + len(toks)
+        tf := make(map[string]int)
+        order := []string{}
+        for _, t := range toks {
+            if has(tf, t) == false { order = append(order, t) }
+            tf[t] = tf[t] + 1
+        }
+        for _, t2 := range order {
+            if has(bm_term_map, t2) {
+                ti := bm_term_map[t2]
+                pl := bm_terms[ti].p
+                pl = append(pl, ci)
+                pl = append(pl, tf[t2])
+                bm_terms[ti].p = pl
+            } else {
+                pl2 := []int{}
+                pl2 = append(pl2, ci)
+                pl2 = append(pl2, tf[t2])
+                bm_term_map[t2] = len(bm_terms)
+                bm_terms = append(bm_terms, PTerm{t: t2, p: pl2})
+            }
+        }
+        bm_chunks = append(bm_chunks, PChunk{id: c.id, doc: c.doc, dl: len(toks)})
+        bm_n = bm_n + 1
+    }
+    bm_avgdl = 1.0
+    if bm_n > 0 { bm_avgdl = float(total_tokens) / float(bm_n) }
+    bm_loaded = true
+    bm25_persist()
 }
 
 // bm25_ensure loads postings.json, or rebuilds from chunks if missing.
@@ -160,10 +210,11 @@ func bm25_search(query, limit) (hits) {
             j = j + 2
         }
     }
-    // selection of top-limit by score desc, tie-break: lower chunk index first
+    // selection of top-limit by score desc, tie-break: lower chunk index first.
+    // Tombstoned docs are skipped (postings stay; filter at read time).
     picked := make(map[int]int)
     count := 0
-    while count < limit && count < len(touched) {
+    while count < limit {
         best := -1
         for _, ci2 := range touched {
             if has(picked, ci2) { continue }
@@ -171,8 +222,9 @@ func bm25_search(query, limit) (hits) {
         }
         if best < 0 { break }
         picked[best] = 1
-        count = count + 1
         pc := bm_chunks[best]
+        if doc_is_deleted(pc.doc) { continue }
+        count = count + 1
         text := ""
         sspan := []int{}
         if has(st_chunk_map, pc.id) {

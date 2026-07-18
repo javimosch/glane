@@ -1,0 +1,294 @@
+// glane — extract: deterministic chunk → nodes/edges (zero LLM).
+// Built-ins: markdown (headings, links), code symbols, JSON top-level keys.
+// Every edge is source="parser" with provenance = [chunk ids].
+
+type Node struct { id string  kind string  name string  attrs string  gen_added int  gen_removed int }
+type Edge struct { id string  src string  rel string  dst string  weight float  source string  provenance []string  gen_added int  gen_removed int }
+type ExtractBundle struct { docs []Doc  chunks []Chunk  nodes []Node  edges []Edge }
+
+// edge_id is a stable content address for (src, rel, dst).
+func edge_id(src, rel, dst) (id) {
+    id = sha256(src + "\t" + rel + "\t" + dst)
+}
+
+func node_doc(path) (n) {
+    n = Node{id: "doc:" + path, kind: "doc", name: path, attrs: "{}", gen_added: 0, gen_removed: 0}
+}
+
+func ensure_node(nodes, seen, n) (out) {
+    out = nodes
+    if has(seen, n.id) { return }
+    seen[n.id] = 1
+    out = append(out, n)
+}
+
+func ensure_edge(edges, seen, src, rel, dst, chunk) (out) {
+    out = edges
+    eid := edge_id(src, rel, dst)
+    if has(seen, eid) { return }
+    seen[eid] = 1
+    prov := []string{}
+    prov = append(prov, chunk)
+    out = append(out, Edge{id: eid, src: src, rel: rel, dst: dst, weight: 1.0, source: "parser", provenance: prov, gen_added: 0, gen_removed: 0})
+}
+
+func is_code(p) (yes) {
+    lp := to_lower(p)
+    yes = has_suffix(lp, ".src") || has_suffix(lp, ".go") || has_suffix(lp, ".py") || has_suffix(lp, ".js") || has_suffix(lp, ".ts") || has_suffix(lp, ".rs") || has_suffix(lp, ".c") || has_suffix(lp, ".h") || has_suffix(lp, ".java")
+}
+
+func is_json_path(p) (yes) {
+    yes = has_suffix(to_lower(p), ".json")
+}
+
+// line_at returns text[pos..) up to (not including) the next newline, and the
+// byte index just after that newline (or len(text) at EOF).
+func line_at(text, pos) (line, next) {
+    n := len(text)
+    i := pos
+    while i < n && charat(text, i) != "\n" { i = i + 1 }
+    line = substr(text, pos, i)
+    next = i
+    if next < n { next = next + 1 }
+}
+
+// md_heading_name strips leading '# ' markers from a heading line.
+func md_heading_name(line) (name, ok) {
+    ok = false
+    name = ""
+    if len(line) == 0 || charat(line, 0) != "#" { return }
+    i := 0
+    while i < len(line) && charat(line, i) == "#" { i = i + 1 }
+    if i == 0 || i > 6 { return }
+    if i < len(line) && charat(line, i) != " " && charat(line, i) != "\t" { return }
+    name = trim(substr(line, i, len(line)))
+    ok = name != ""
+}
+
+// extract_md_links finds [label](target) occurrences in text.
+func extract_md_links(text, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    i := 0
+    n := len(text)
+    while i < n {
+        lb := index_from(text, "[", i)
+        if lb < 0 { return }
+        rb := index_from(text, "](", lb + 1)
+        if rb < 0 { i = lb + 1  continue }
+        re := index_from(text, ")", rb + 2)
+        if re < 0 { i = lb + 1  continue }
+        label := substr(text, lb + 1, rb)
+        target := trim(substr(text, rb + 2, re))
+        if target == "" { i = re + 1  continue }
+        // skip image-style that started with ![
+        if lb > 0 && charat(text, lb - 1) == "!" { i = re + 1  continue }
+        nid := "link:" + target
+        nout = ensure_node(nout, nseen, Node{id: nid, kind: "link", name: target, attrs: "{\"label\":" + json(label) + "}", gen_added: 0, gen_removed: 0})
+        eout = ensure_edge(eout, eseen, doc_id, "links_to", nid, chunk)
+        // relative markdown file link → refs edge to that doc
+        if has_prefix(target, "http://") == false && has_prefix(target, "https://") == false && has_prefix(target, "#") == false && has_prefix(target, "mailto:") == false {
+            tpath := target
+            hash := index(tpath, "#")
+            if hash >= 0 { tpath = substr(tpath, 0, hash) }
+            if tpath != "" && (has_suffix(to_lower(tpath), ".md") || has_suffix(to_lower(tpath), ".markdown") || contains(tpath, "/") || contains(tpath, ".")) {
+                did := "doc:" + tpath
+                nout = ensure_node(nout, nseen, node_doc(tpath))
+                eout = ensure_edge(eout, eseen, doc_id, "refs", did, chunk)
+            }
+        }
+        i = re + 1
+    }
+}
+
+// index_from is index() but starting at `from` (byte offset).
+func index_from(s, needle, from) (at) {
+    at = -1
+    if from >= len(s) { return }
+    sub := substr(s, from, len(s))
+    j := index(sub, needle)
+    if j < 0 { return }
+    at = from + j
+}
+
+// extract_code_symbols pulls func/def/class/type/struct/fn names from a line.
+func extract_code_symbols(line, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    t := trim(line)
+    if t == "" { return }
+    kw := ""
+    rest := ""
+    if has_prefix(t, "func ") { kw = "func"  rest = substr(t, 5, len(t)) }
+    if has_prefix(t, "def ") { kw = "def"  rest = substr(t, 4, len(t)) }
+    if has_prefix(t, "class ") { kw = "class"  rest = substr(t, 6, len(t)) }
+    if has_prefix(t, "type ") { kw = "type"  rest = substr(t, 5, len(t)) }
+    if has_prefix(t, "struct ") { kw = "struct"  rest = substr(t, 7, len(t)) }
+    if has_prefix(t, "fn ") { kw = "fn"  rest = substr(t, 3, len(t)) }
+    if kw == "" { return }
+    rest = trim(rest)
+    // skip receiver form "func (t *T) Name" — pull the method name after ')'
+    if has_prefix(rest, "(") {
+        close := index(rest, ")")
+        if close < 0 { return }
+        rest = trim(substr(rest, close + 1, len(rest)))
+    }
+    name := ""
+    i := 0
+    while i < len(rest) {
+        c := charat(rest, i)
+        okc := (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_"
+        if okc == false { break }
+        name = name + c
+        i = i + 1
+    }
+    if name == "" { return }
+    nid := "symbol:" + name
+    nout = ensure_node(nout, nseen, Node{id: nid, kind: "symbol", name: name, attrs: "{\"kw\":" + json(kw) + ",\"doc\":" + json(doc_id) + "}", gen_added: 0, gen_removed: 0})
+    eout = ensure_edge(eout, eseen, doc_id, "defines", nid, chunk)
+}
+
+// extract_json_keys pulls top-level object keys from a JSON chunk (best-effort).
+func extract_json_keys(text, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    t := trim(text)
+    if has_prefix(t, "{") == false { return }
+    i := 1
+    n := len(t)
+    while i < n {
+        while i < n && (charat(t, i) == " " || charat(t, i) == "\n" || charat(t, i) == "\t" || charat(t, i) == "\r" || charat(t, i) == ",") { i = i + 1 }
+        if i >= n || charat(t, i) == "}" { return }
+        if charat(t, i) != "\"" { return }
+        i = i + 1
+        start := i
+        while i < n && charat(t, i) != "\"" {
+            if charat(t, i) == "\\" { i = i + 2  continue }
+            i = i + 1
+        }
+        if i >= n { return }
+        key := substr(t, start, i)
+        i = i + 1
+        nid := "jsonkey:" + key
+        nout = ensure_node(nout, nseen, Node{id: nid, kind: "jsonkey", name: key, attrs: "{}", gen_added: 0, gen_removed: 0})
+        eout = ensure_edge(eout, eseen, doc_id, "has_key", nid, chunk)
+        // skip to next top-level key: advance past value until comma/brace at depth 0
+        depth := 0
+        in_str := false
+        esc := false
+        while i < n {
+            c := charat(t, i)
+            if in_str {
+                if esc { esc = false } else {
+                    if c == "\\" { esc = true }
+                    if c == "\"" { in_str = false }
+                }
+                i = i + 1
+                continue
+            }
+            if c == "\"" { in_str = true  i = i + 1  continue }
+            if c == "{" || c == "[" { depth = depth + 1 }
+            if c == "}" || c == "]" {
+                if depth == 0 { return }
+                depth = depth - 1
+            }
+            if c == "," && depth == 0 { i = i + 1  break }
+            i = i + 1
+        }
+    }
+}
+
+// extract_chunk runs the appropriate built-in parsers for one chunk.
+func extract_chunk(c, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    doc_id := "doc:" + c.doc
+    nout = ensure_node(nout, nseen, node_doc(c.doc))
+    eout = ensure_edge(eout, eseen, doc_id, "has_chunk", "chunk:" + c.id, c.id)
+    nout = ensure_node(nout, nseen, Node{id: "chunk:" + c.id, kind: "chunk", name: c.id, attrs: "{\"doc\":" + json(c.doc) + ",\"ord\":" + str(c.ord) + "}", gen_added: 0, gen_removed: 0})
+    if is_markdown(c.doc) {
+        pos := 0
+        while pos < len(c.text) {
+            line, next := line_at(c.text, pos)
+            hname, hok := md_heading_name(line)
+            if hok {
+                hid := "heading:" + to_lower(hname)
+                nout = ensure_node(nout, nseen, Node{id: hid, kind: "heading", name: hname, attrs: "{}", gen_added: 0, gen_removed: 0})
+                eout = ensure_edge(eout, eseen, doc_id, "has_heading", hid, c.id)
+            }
+            pos = next
+        }
+        nout, eout = extract_md_links(c.text, c.id, doc_id, nout, eout, nseen, eseen)
+    }
+    if is_code(c.doc) {
+        pos2 := 0
+        while pos2 < len(c.text) {
+            line2, next2 := line_at(c.text, pos2)
+            nout, eout = extract_code_symbols(line2, c.id, doc_id, nout, eout, nseen, eseen)
+            pos2 = next2
+        }
+    }
+    if is_json_path(c.doc) {
+        nout, eout = extract_json_keys(c.text, c.id, doc_id, nout, eout, nseen, eseen)
+    }
+}
+
+// extract_chunks runs extractors over a chunk list → nodes + edges (sorted ids).
+func extract_chunks(chunks) (nodes, edges) {
+    nodes = []Node{}
+    edges = []Edge{}
+    nseen := make(map[string]int)
+    eseen := make(map[string]int)
+    for _, c := range chunks {
+        nodes, edges = extract_chunk(c, nodes, edges, nseen, eseen)
+    }
+    // deterministic order: sort by id
+    nodes = sort_nodes(nodes)
+    edges = sort_edges(edges)
+}
+
+func sort_nodes(xs) (out) {
+    out = xs
+    // insertion sort by id (N is small per commit batch)
+    i := 1
+    while i < len(out) {
+        j := i
+        while j > 0 && out[j].id < out[j - 1].id {
+            t := out[j]  out[j] = out[j - 1]  out[j - 1] = t
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+func sort_edges(xs) (out) {
+    out = xs
+    i := 1
+    while i < len(out) {
+        j := i
+        while j > 0 && out[j].id < out[j - 1].id {
+            t := out[j]  out[j] = out[j - 1]  out[j - 1] = t
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+func bundle_json(b) (s) {
+    nparts := []string{}
+    for _, n := range b.nodes { nparts = append(nparts, json(n)) }
+    eparts := []string{}
+    for _, e := range b.edges { eparts = append(eparts, json(e)) }
+    cparts := []string{}
+    for _, c := range b.chunks { cparts = append(cparts, json(c)) }
+    s = "{\"docs\":" + docs_json(b.docs) + ",\"chunks\":" + json_arr(cparts) + ",\"nodes\":" + json_arr(nparts) + ",\"edges\":" + json_arr(eparts) + "}"
+}
+
+// cmd_extract: ChunkSet JSON on stdin → ExtractBundle JSON on stdout.
+func cmd_extract() {
+    raw := trim(read_stdin())
+    if raw == "" || has_prefix(raw, "{") == false { fail(83, "GLANE_BAD_INPUT", "expected chunk-set JSON ({docs,chunks}) on stdin", true, []string{"glane scan <path> | glane chunk | glane extract"}) }
+    cs := parse(raw, ChunkSet{})
+    nodes, edges := extract_chunks(cs.chunks)
+    println(bundle_json(ExtractBundle{docs: cs.docs, chunks: cs.chunks, nodes: nodes, edges: edges}))
+}

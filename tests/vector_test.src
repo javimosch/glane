@@ -1,0 +1,79 @@
+// int8 quantize, cosine ranking, RRF, localhost URL guard — no network.
+
+func main() {
+    // localhost guard
+    assert(embed_host_ok("http://127.0.0.1:8095/v1/embeddings"), "127.0.0.1 ok")
+    assert(embed_host_ok("http://localhost:8095/v1/embeddings"), "localhost ok")
+    assert(embed_host_ok("http://example.com/v1/embeddings") == false, "remote rejected")
+    assert(embed_host_ok("https://127.0.0.1:8095/v1/embeddings") == false, "https rejected in M2")
+
+    // quantize clamps
+    fv := []float{}
+    fv = append(fv, 1.0)
+    fv = append(fv, -1.0)
+    fv = append(fv, 0.0)
+    fv = append(fv, 0.5)
+    q := quantize_f32_i8(fv)
+    assert_eq_int(q[0], 127, "+1 -> 127")
+    assert_eq_int(q[1], 0 - 127, "-1 -> -127")
+    assert_eq_int(q[2], 0, "0 -> 0")
+    assert_eq_int(q[3], 64, "0.5 -> ~64")  // 0.5*127=63.5 -> 64 with +0.5
+
+    // cosine: identical vectors ~ 1
+    s1 := cosine_i8(q, q)
+    assert(s1 > 0.99, "self cosine near 1 (got " + str(s1) + ")")
+
+    // opposite-ish
+    opp := []int{}
+    opp = append(opp, 0 - 127)
+    opp = append(opp, 127)
+    opp = append(opp, 0)
+    opp = append(opp, 0 - 64)
+    s2 := cosine_i8(q, opp)
+    assert(s2 < 0.0, "opposite-ish is negative")
+
+    // RRF: chunk in both lists ranks above single-list peers
+    a := []SearchHit{}
+    a = append(a, SearchHit{chunk: "c1", doc: "d", score: 9.0, span: []int{}, snippet: "a"})
+    a = append(a, SearchHit{chunk: "c2", doc: "d", score: 8.0, span: []int{}, snippet: "a"})
+    b := []SearchHit{}
+    b = append(b, SearchHit{chunk: "c3", doc: "d", score: 7.0, span: []int{}, snippet: "b"})
+    b = append(b, SearchHit{chunk: "c1", doc: "d", score: 6.0, span: []int{}, snippet: "b"})
+    scores := make(map[string]float)
+    meta := make(map[string]SearchHit)
+    order := []string{}
+    order = rrf_add(a, scores, meta, order)
+    order = rrf_add(b, scores, meta, order)
+    fused := rrf_top(scores, meta, order, 3)
+    assert_eq_int(len(fused), 3, "rrf returns 3")
+    assert_eq_str(fused[0].chunk, "c1", "c1 wins RRF (in both lists)")
+
+    // vector store round-trip (no HTTP)
+    tmp := "/tmp/glane-vec-test-" + str(now_ms())
+    mkdir(tmp)
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_init(), 0, "init")
+    // plant a chunk + vector
+    st_loaded = true
+    st_chunk_map["cid"] = 0
+    st_chunks = append(st_chunks, Chunk{id: "cid", doc: "a.md", ord: 0, start: 0, end: 4, text: "test"})
+    st_docs = append(st_docs, Doc{path: "a.md", sha256: "x", bytes: 4, mtime: 1, gen: 1, deleted: 0})
+    st_doc_map["a.md"] = 0
+    st_doc_paths = append(st_doc_paths, "a.md")
+    recs := []VecRec{}
+    recs = append(recs, VecRec{id: "cid", dim: 4, q: q})
+    store_add_vectors(recs)
+    assert_eq_int(live_vec_count(), 1, "one live vector")
+    assert_eq_int(st_vec_dim, 4, "dim recorded")
+    // reload
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_load(), 0, "reload")
+    assert_eq_int(len(st_vecs), 1, "vector persisted")
+    assert_eq_int(st_vecs[0].q[0], 127, "q bytes round-trip")
+
+    // hard max constant
+    assert_eq_int(EMBED_HARD_MAX, 10, "hard max is 10")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}

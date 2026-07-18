@@ -7,8 +7,12 @@
 //   83 GLANE_BAD_INPUT  malformed JSON on stdin / bad flag value
 //   84 GLANE_IO         file read/write failure
 //   85 GLANE_NOT_FOUND  path to scan does not exist
+//   86 GLANE_NO_NODE    query target node missing or tombstoned
+//   87 GLANE_NO_PATH    no path within max-hops
+//   88 GLANE_EMBED      embedding endpoint error / non-localhost URL
+//   89 GLANE_NO_VECTORS semantic search requested but vector cache empty
 
-var glane_version = "0.1.0"
+var glane_version = "0.3.0"
 
 // fail prints a typed error JSON on stdout (data channel) and exits.
 func fail(exitcode, code, msg, recoverable, suggestions) {

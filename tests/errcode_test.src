@@ -42,6 +42,16 @@ func main() {
     c8, _ := run_glane(tmp, "feedback works", "")
     assert_eq_int(c8, 0, "feedback -> 0")
 
+    // query against empty store -> NO_NODE
+    c9, o9 := run_glane(tmp, "query neighbors doc:nope.md", "")
+    assert_eq_int(c9, 86, "missing node -> 86")
+    kind9, _ := json_get(o9, ".error.code")
+    assert_eq_str(kind9, "\"GLANE_NO_NODE\"", "typed NO_NODE")
+
+    // embed hard cap
+    c10, _ := run_glane(tmp, "embed --limit 11", "")
+    assert_eq_int(c10, 83, "embed --limit 11 -> 83")
+
     _, _, _ := exec("rm -rf " + tmp)
     test_summary()
 }

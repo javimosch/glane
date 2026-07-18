@@ -1,0 +1,66 @@
+// deterministic extractors: markdown headings/links, code symbols, json keys.
+
+func main() {
+    md := "# Intro\n\nSee [docs](other.md) and [site](https://example.com).\n\n## Details\n\nbody\n"
+    mc := chunk_text("readme.md", md)
+    assert(len(mc) >= 1, "md produced chunks")
+    nodes, edges := extract_chunks(mc)
+
+    kinds := make(map[string]int)
+    for _, n := range nodes { kinds[n.kind] = kinds[n.kind] + 1 }
+    assert(kinds["doc"] >= 1, "doc node present")
+    assert(kinds["heading"] >= 2, "two headings extracted")
+    assert(kinds["link"] >= 2, "two links extracted")
+    assert(kinds["chunk"] >= 1, "chunk nodes present")
+
+    rels := make(map[string]int)
+    for _, e := range edges {
+        rels[e.rel] = rels[e.rel] + 1
+        assert_eq_str(e.source, "parser", "edge source=parser")
+        assert(len(e.provenance) >= 1, "edge has provenance")
+    }
+    assert(rels["has_heading"] >= 2, "has_heading edges")
+    assert(rels["links_to"] >= 2, "links_to edges")
+    assert(rels["refs"] >= 1, "refs edge to other.md")
+
+    // ids are stable across re-extract
+    n2, e2 := extract_chunks(mc)
+    assert_eq_int(len(nodes), len(n2), "node count stable")
+    assert_eq_int(len(edges), len(e2), "edge count stable")
+    i := 0
+    while i < len(nodes) {
+        assert_eq_str(nodes[i].id, n2[i].id, "node id order stable")
+        i = i + 1
+    }
+
+    // code symbols
+    code := "func store_commit(docs, chunks) {\n    return\n}\ndef helper():\n    pass\nclass Widget:\n    pass\n"
+    cc := []Chunk{}
+    cc = append(cc, Chunk{id: sha256(code), doc: "x.src", ord: 0, start: 0, end: len(code), text: code})
+    cn, ce := extract_chunks(cc)
+    sym := 0
+    for _, n := range cn { if n.kind == "symbol" { sym = sym + 1 } }
+    assert(sym >= 3, "func/def/class symbols (got " + str(sym) + ")")
+    defs := 0
+    for _, e := range ce { if e.rel == "defines" { defs = defs + 1 } }
+    assert(defs >= 3, "defines edges")
+
+    // json top-level keys
+    js := "{\n  \"name\": \"glane\",\n  \"version\": 1,\n  \"nested\": {\"x\": 1}\n}\n"
+    jc := []Chunk{}
+    jc = append(jc, Chunk{id: sha256(js), doc: "cfg.json", ord: 0, start: 0, end: len(js), text: js})
+    jn, je := extract_chunks(jc)
+    keys := 0
+    for _, n := range jn { if n.kind == "jsonkey" { keys = keys + 1 } }
+    assert_eq_int(keys, 3, "three top-level json keys")
+    hk := 0
+    for _, e := range je { if e.rel == "has_key" { hk = hk + 1 } }
+    assert_eq_int(hk, 3, "three has_key edges")
+
+    // empty chunk list
+    zn, ze := extract_chunks([]Chunk{})
+    assert_eq_int(len(zn), 0, "no nodes for empty")
+    assert_eq_int(len(ze), 0, "no edges for empty")
+
+    test_summary()
+}

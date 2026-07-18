@@ -1,0 +1,194 @@
+// glane — embed: OpenAI-compatible POST /v1/embeddings → int8 vector cache.
+// HARD CAP: at most EMBED_HARD_MAX vectors per invocation (localhost smoke).
+// Host must be localhost / 127.0.0.1. sync never auto-embeds.
+
+var EMBED_HARD_MAX = 10
+var EMBED_DEFAULT_DIM = 64
+var EMBED_DEFAULT_URL = "http://127.0.0.1:8095/v1/embeddings"
+// Cap chars sent to the embedder — long chunks stall fragile localhost.
+var EMBED_MAX_CHARS = 256
+
+type EmbItem struct { index int  embedding []float }
+type EmbResp struct { data []EmbItem  model string }
+type FloatVec struct { v []float }
+
+type EmbedStats struct { embedded int  skipped int  dim int  model string  url string  ms int  capped bool }
+
+func embed_url() (u) {
+    u = env("GLANE_EMBED_URL")
+    if trim(u) == "" { u = EMBED_DEFAULT_URL }
+}
+
+func embed_dim() (d) {
+    d = EMBED_DEFAULT_DIM
+    raw := env("GLANE_EMBED_DIM")
+    if trim(raw) != "" {
+        v := parse_int(raw)
+        if v > 0 { d = v }
+    }
+}
+
+func embed_max_chars() (n) {
+    n = EMBED_MAX_CHARS
+    raw := env("GLANE_EMBED_MAXCHARS")
+    if trim(raw) != "" {
+        v := parse_int(raw)
+        if v >= 32 { n = v }
+    }
+}
+
+// embed_text truncates chunk text for the localhost smoke path.
+func embed_text(text) (t) {
+    t = text
+    n := embed_max_chars()
+    if len(t) > n { t = substr(t, 0, n) }
+}
+
+// embed_host_ok: M2 safety — only localhost endpoints.
+func embed_host_ok(url) (yes) {
+    yes = false
+    u := to_lower(url)
+    if has_prefix(u, "http://127.0.0.1:") || has_prefix(u, "http://127.0.0.1/") { yes = true  return }
+    if has_prefix(u, "http://localhost:") || has_prefix(u, "http://localhost/") { yes = true  return }
+    if u == "http://127.0.0.1" || u == "http://localhost" { yes = true  return }
+}
+
+// quantize_f32_i8: unit-ish vectors → int8 in [-127,127] (scale = 127).
+func quantize_f32_i8(v) (q) {
+    q = []int{}
+    for _, x := range v {
+        n := int(x * 127.0 + 0.5)
+        if x < 0.0 { n = int(x * 127.0 - 0.5) }
+        if n > 127 { n = 127 }
+        if n < 0 - 127 { n = 0 - 127 }
+        q = append(q, n)
+    }
+}
+
+func i8_to_u8(v) (u) {
+    u = v
+    if u < 0 { u = u + 256 }
+}
+
+// pack_i8 writes q into an alloc'd buffer (caller frees).
+func pack_i8(q) (p) {
+    p = alloc(len(q))
+    i := 0
+    while i < len(q) {
+        poke_u8(p, i, i8_to_u8(q[i]))
+        i = i + 1
+    }
+}
+
+// embed_fetch POSTs up to EMBED_HARD_MAX texts in ONE request.
+// Returns []FloatVec aligned with texts. err: 0 ok, 88 embed fail, 83 bad.
+func embed_fetch(texts, dim) (vecs, model, err) {
+    vecs = []FloatVec{}
+    model = ""
+    err = 0
+    if len(texts) == 0 { return }
+    if len(texts) > EMBED_HARD_MAX { err = 83  return }
+    url := embed_url()
+    if embed_host_ok(url) == false {
+        err = 88
+        return
+    }
+    parts := []string{}
+    for _, t := range texts { parts = append(parts, json(t)) }
+    body := "{\"input\":" + json_arr(parts) + ",\"dimensions\":" + str(dim) + "}"
+    hdrs := []string{}
+    hdrs = append(hdrs, "Content-Type: application/json")
+    status, resp, herr := http_request("POST", url, hdrs, body)
+    if herr != "" || status < 200 || status >= 300 {
+        err = 88
+        return
+    }
+    parsed := parse(resp, EmbResp{})
+    if len(parsed.data) != len(texts) { err = 88  return }
+    // order by index
+    by := make(map[int][]float)
+    for _, it := range parsed.data { by[it.index] = it.embedding }
+    i := 0
+    while i < len(texts) {
+        if has(by, i) == false { err = 88  return }
+        if len(by[i]) == 0 { err = 88  return }
+        vecs = append(vecs, FloatVec{v: by[i]})
+        i = i + 1
+    }
+    model = parsed.model
+}
+
+// chunks_needing_embed: live chunks without a vector, stable order by store index.
+func chunks_needing_embed() (out) {
+    out = []Chunk{}
+    for _, c := range st_chunks {
+        if has(st_vec_map, c.id) { continue }
+        if doc_is_deleted(c.doc) { continue }
+        out = append(out, c)
+    }
+}
+
+// embed_chunks_capped embeds at most `limit` missing chunks (clamped to HARD_MAX).
+func embed_chunks_capped(limit) (stats, err) {
+    err = 0
+    stats = EmbedStats{embedded: 0, skipped: 0, dim: embed_dim(), model: "", url: embed_url(), ms: 0, capped: false}
+    if embed_host_ok(stats.url) == false {
+        err = 88
+        return
+    }
+    if limit < 1 { limit = EMBED_HARD_MAX }
+    if limit > EMBED_HARD_MAX { limit = EMBED_HARD_MAX  stats.capped = true }
+    need := chunks_needing_embed()
+    stats.skipped = len(need)
+    if len(need) > limit {
+        // take first `limit` only
+        trimmed := []Chunk{}
+        i := 0
+        while i < limit { trimmed = append(trimmed, need[i])  i = i + 1 }
+        need = trimmed
+        stats.capped = true
+    }
+    stats.skipped = stats.skipped - len(need)
+    if len(need) == 0 { return }
+    // One text per HTTP call — keeps the fragile localhost mutex holds short.
+    t0 := now_ms()
+    recs := []VecRec{}
+    i2 := 0
+    while i2 < len(need) {
+        texts := []string{}
+        texts = append(texts, embed_text(need[i2].text))
+        progress("embed: " + str(i2 + 1) + "/" + str(len(need)) + " chunk " + need[i2].id)
+        vecs, model, ferr := embed_fetch(texts, stats.dim)
+        if ferr != 0 { err = ferr  stats.ms = now_ms() - t0  return }
+        stats.model = model
+        q := quantize_f32_i8(vecs[0].v)
+        if stats.dim != len(q) { stats.dim = len(q) }
+        recs = append(recs, VecRec{id: need[i2].id, dim: len(q), q: q})
+        // persist each vector immediately so a mid-batch kill keeps progress
+        one := []VecRec{}
+        one = append(one, recs[len(recs) - 1])
+        store_add_vectors(one)
+        i2 = i2 + 1
+    }
+    stats.ms = now_ms() - t0
+    stats.embedded = len(recs)
+}
+
+func cmd_embed(limit) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    if limit < 1 { limit = EMBED_HARD_MAX }
+    if limit > EMBED_HARD_MAX {
+        fail(83, "GLANE_BAD_INPUT", "embed limit cannot exceed " + str(EMBED_HARD_MAX) + " (localhost smoke cap)", true, []string{"glane embed --limit " + str(EMBED_HARD_MAX)})
+    }
+    url := embed_url()
+    if embed_host_ok(url) == false {
+        fail(88, "GLANE_EMBED", "GLANE_EMBED_URL must be localhost/127.0.0.1 (got " + url + ")", true, []string{"export GLANE_EMBED_URL=http://127.0.0.1:8095/v1/embeddings"})
+    }
+    progress("embed: url=" + url + " dim=" + str(embed_dim()) + " limit=" + str(limit))
+    stats, err := embed_chunks_capped(limit)
+    if err == 88 { fail(88, "GLANE_EMBED", "embedding request failed (is serve_qwen3e up on localhost?)", true, []string{"curl -s http://127.0.0.1:8095/health", "check GLANE_EMBED_URL"}) }
+    if err == 83 { fail(83, "GLANE_BAD_INPUT", "embed batch too large", true, []string{}) }
+    if err != 0 { fail(84, "GLANE_IO", "embed persist failed", false, []string{}) }
+    println(json(stats))
+}

@@ -1,0 +1,73 @@
+// graph query: neighbors, path, subgraph — against an in-memory store.
+
+func put_live_node(id, kind, name) {
+    n := Node{id: id, kind: kind, name: name, attrs: "{}", gen_added: 1, gen_removed: 0}
+    st_node_map[id] = len(st_nodes)
+    st_nodes = append(st_nodes, n)
+}
+
+func put_live_edge(src, rel, dst) {
+    eid := edge_id(src, rel, dst)
+    prov := []string{}
+    prov = append(prov, "c1")
+    e := Edge{id: eid, src: src, rel: rel, dst: dst, weight: 1.0, source: "parser", provenance: prov, gen_added: 1, gen_removed: 0}
+    st_edge_map[eid] = len(st_edges)
+    st_edges = append(st_edges, e)
+}
+
+func main() {
+    store_reset("/tmp/glane-graph-test-unused")
+    // A --refs--> B --refs--> C ; A --links_to--> L
+    put_live_node("doc:a.md", "doc", "a.md")
+    put_live_node("doc:b.md", "doc", "b.md")
+    put_live_node("doc:c.md", "doc", "c.md")
+    put_live_node("link:https://x.test", "link", "https://x.test")
+    put_live_edge("doc:a.md", "refs", "doc:b.md")
+    put_live_edge("doc:b.md", "refs", "doc:c.md")
+    put_live_edge("doc:a.md", "links_to", "link:https://x.test")
+
+    // neighbors
+    hits, err := query_neighbors("doc:a.md", "", "out")
+    assert_eq_int(err, 0, "neighbors ok")
+    assert_eq_int(len(hits), 2, "two outbound neighbors")
+    // filter by rel
+    refs, _ := query_neighbors("doc:a.md", "refs", "out")
+    assert_eq_int(len(refs), 1, "one refs neighbor")
+    assert_eq_str(refs[0].node, "doc:b.md", "refs points to b")
+
+    // unknown node
+    _, e86 := query_neighbors("doc:missing.md", "", "both")
+    assert_eq_int(e86, 86, "missing node -> 86")
+
+    // path a -> c
+    p, pe := query_path("doc:a.md", "doc:c.md", 8)
+    assert_eq_int(pe, 0, "path found")
+    assert_eq_int(p.hops, 2, "two hops")
+    assert_eq_int(len(p.nodes), 3, "three nodes on path")
+    assert_eq_str(p.nodes[0], "doc:a.md", "path starts at a")
+    assert_eq_str(p.nodes[2], "doc:c.md", "path ends at c")
+
+    // no path within 1 hop
+    _, e87 := query_path("doc:a.md", "doc:c.md", 1)
+    assert_eq_int(e87, 87, "max-hops too small -> 87")
+
+    // subgraph depth 1 around a: a, b, link (not c)
+    sub, se := query_subgraph("doc:a.md", 1)
+    assert_eq_int(se, 0, "subgraph ok")
+    assert_eq_int(len(sub.nodes), 3, "depth-1 has 3 nodes")
+    has_c := false
+    for _, n := range sub.nodes { if n.id == "doc:c.md" { has_c = true } }
+    assert(has_c == false, "c not in depth-1 ball")
+
+    sub2, _ := query_subgraph("doc:a.md", 2)
+    has_c2 := false
+    for _, n2 := range sub2.nodes { if n2.id == "doc:c.md" { has_c2 = true } }
+    assert(has_c2, "c in depth-2 ball")
+
+    // tombstoned node is invisible
+    st_nodes[st_node_map["doc:b.md"]].gen_removed = 9
+    _, e86b := query_neighbors("doc:b.md", "", "both")
+    assert_eq_int(e86b, 86, "tombstoned node -> 86")
+
+    test_summary()
+}

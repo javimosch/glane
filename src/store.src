@@ -1,9 +1,9 @@
 // glane — store: the ONE module that owns .glane/ persistence.
-// Layout: config.json, docs.jsonl (latest-wins per path), chunks.jsonl
-// (append-only, content-addressed), commits.jsonl (generation ledger),
-// bm25/postings.json (rebuildable index; written temp-then-rename).
-// M1 swaps this module for grange-backed collections; commands never touch
-// files directly.
+// Layout: config.json, docs.jsonl (latest-wins per path; deleted=gen tombstone),
+// chunks.jsonl (append-only, content-addressed), nodes.jsonl / edges.jsonl
+// (append-only; live = gen_removed==0), commits.jsonl, bm25/postings.json,
+// vectors.jsonl (rebuildable int8 cache; optional).
+// Commands never touch these files directly.
 
 var st_dir = ".glane"
 var st_loaded = false
@@ -13,10 +13,14 @@ var st_doc_map = make(map[string]int)
 var st_docs = []Doc{}
 var st_chunk_map = make(map[string]int)
 var st_chunks = []Chunk{}
+var st_node_map = make(map[string]int)
+var st_nodes = []Node{}
+var st_edge_map = make(map[string]int)
+var st_edges = []Edge{}
 var st_disk_bytes = 0
 
-type CommitRec struct { gen int  ts int  op string  docs_seen int  docs_changed int  chunks_new int  chunks_total int }
-type SyncStats struct { gen int  docs_seen int  docs_changed int  chunks_new int  chunks_total int  ms int }
+type CommitRec struct { gen int  ts int  op string  docs_seen int  docs_changed int  docs_deleted int  chunks_new int  chunks_total int  nodes_new int  edges_new int }
+type SyncStats struct { gen int  docs_seen int  docs_changed int  docs_deleted int  chunks_new int  chunks_total int  nodes_new int  edges_new int  nodes_total int  edges_total int  ms int }
 
 // store_reset clears in-memory state (used when re-pointing st_dir, e.g. bench).
 func store_reset(dir) {
@@ -28,8 +32,13 @@ func store_reset(dir) {
     st_docs = []Doc{}
     st_chunk_map = make(map[string]int)
     st_chunks = []Chunk{}
+    st_node_map = make(map[string]int)
+    st_nodes = []Node{}
+    st_edge_map = make(map[string]int)
+    st_edges = []Edge{}
     st_disk_bytes = 0
     bm25_reset()
+    vec_reset()
 }
 
 func store_exists() (yes) {
@@ -42,11 +51,44 @@ func store_init() (err) {
     if store_exists() { err = 82  return }
     mkdir(st_dir)
     mkdir(st_dir + "/bm25")
-    cfg := "{\"name\":\"glane\",\"store_version\":1,\"created\":" + str(now()) + "}"
+    cfg := "{\"name\":\"glane\",\"store_version\":3,\"created\":" + str(now()) + "}"
     if write_file(st_dir + "/config.json", cfg) < 0 { err = 84  return }
     write_file(st_dir + "/docs.jsonl", "")
     write_file(st_dir + "/chunks.jsonl", "")
+    write_file(st_dir + "/nodes.jsonl", "")
+    write_file(st_dir + "/edges.jsonl", "")
     write_file(st_dir + "/commits.jsonl", "")
+    write_file(st_dir + "/vectors.jsonl", "")
+}
+
+// apply_doc_row upserts a doc row (latest-wins by path).
+func apply_doc_row(d) {
+    if has(st_doc_map, d.path) {
+        st_docs[st_doc_map[d.path]] = d
+    } else {
+        st_doc_map[d.path] = len(st_docs)
+        st_docs = append(st_docs, d)
+        st_doc_paths = append(st_doc_paths, d.path)
+    }
+}
+
+// apply_node_row upserts by id (latest-wins).
+func apply_node_row(n) {
+    if has(st_node_map, n.id) {
+        st_nodes[st_node_map[n.id]] = n
+    } else {
+        st_node_map[n.id] = len(st_nodes)
+        st_nodes = append(st_nodes, n)
+    }
+}
+
+func apply_edge_row(e) {
+    if has(st_edge_map, e.id) {
+        st_edges[st_edge_map[e.id]] = e
+    } else {
+        st_edge_map[e.id] = len(st_edges)
+        st_edges = append(st_edges, e)
+    }
 }
 
 // store_load reads the whole store into memory. err: 0 ok, 81 no store.
@@ -56,18 +98,14 @@ func store_load() (err) {
     if store_exists() == false { err = 81  return }
     dr := read_file(st_dir + "/docs.jsonl")
     cr := read_file(st_dir + "/chunks.jsonl")
+    nr := read_file(st_dir + "/nodes.jsonl")
+    er := read_file(st_dir + "/edges.jsonl")
     mr := read_file(st_dir + "/commits.jsonl")
-    st_disk_bytes = len(dr) + len(cr) + len(mr) + len(read_file(st_dir + "/config.json")) + len(read_file(st_dir + "/bm25/postings.json"))
+    vr := read_file(st_dir + "/vectors.jsonl")
+    st_disk_bytes = len(dr) + len(cr) + len(nr) + len(er) + len(mr) + len(vr) + len(read_file(st_dir + "/config.json")) + len(read_file(st_dir + "/bm25/postings.json"))
     for _, ln := range split(dr, "\n") {
         if trim(ln) == "" { continue }
-        d := parse(ln, Doc{})
-        if has(st_doc_map, d.path) {
-            st_docs[st_doc_map[d.path]] = d
-        } else {
-            st_doc_map[d.path] = len(st_docs)
-            st_docs = append(st_docs, d)
-            st_doc_paths = append(st_doc_paths, d.path)
-        }
+        apply_doc_row(parse(ln, Doc{}))
     }
     for _, cln := range split(cr, "\n") {
         if trim(cln) == "" { continue }
@@ -76,10 +114,22 @@ func store_load() (err) {
         st_chunk_map[c.id] = len(st_chunks)
         st_chunks = append(st_chunks, c)
     }
+    for _, nln := range split(nr, "\n") {
+        if trim(nln) == "" { continue }
+        apply_node_row(parse(nln, Node{}))
+    }
+    for _, eln := range split(er, "\n") {
+        if trim(eln) == "" { continue }
+        apply_edge_row(parse(eln, Edge{}))
+    }
     for _, gln := range split(mr, "\n") {
         if trim(gln) == "" { continue }
         rec := parse(gln, CommitRec{})
         if rec.gen > st_gen { st_gen = rec.gen }
+    }
+    for _, vln := range split(vr, "\n") {
+        if trim(vln) == "" { continue }
+        apply_vec_row(parse(vln, VecRec{}))
     }
     st_loaded = true
 }
@@ -91,44 +141,134 @@ func append_lines(file, added) {
     write_file(file, old + added)
 }
 
-// store_commit persists a chunk set as a new generation. Unchanged chunk ids
-// are skipped (incremental for free). Returns the stats.
-func store_commit(docs, chunks, op) (stats, err) {
+func doc_alive(d) (yes) { yes = d.deleted == 0 }
+
+func live_node_count() (n) {
+    n = 0
+    for _, x := range st_nodes { if x.gen_removed == 0 { n = n + 1 } }
+}
+
+func live_edge_count() (n) {
+    n = 0
+    for _, x := range st_edges { if x.gen_removed == 0 { n = n + 1 } }
+}
+
+// store_commit persists docs/chunks/nodes/edges as a new generation.
+// `docs` is the full current scan (absent live docs are tombstoned).
+// Unchanged chunk ids and live identical edge/node ids are skipped.
+func store_commit(docs, chunks, nodes, edges, op) (stats, err) {
     err = store_load()
-    stats = SyncStats{gen: 0, docs_seen: 0, docs_changed: 0, chunks_new: 0, chunks_total: 0, ms: 0}
+    stats = SyncStats{gen: 0, docs_seen: 0, docs_changed: 0, docs_deleted: 0, chunks_new: 0, chunks_total: 0, nodes_new: 0, edges_new: 0, nodes_total: 0, edges_total: 0, ms: 0}
     if err != 0 { return }
     dlines := []string{}
     changed := 0
+    seen := make(map[string]int)
     for _, d := range docs {
+        seen[d.path] = 1
         prevsha := ""
-        if has(st_doc_map, d.path) { prevsha = st_docs[st_doc_map[d.path]].sha256 }
-        if prevsha == d.sha256 { continue }
-        changed = changed + 1
-        dlines = append(dlines, json(d) + "\n")
+        prevdel := 0
         if has(st_doc_map, d.path) {
-            st_docs[st_doc_map[d.path]] = d
-        } else {
-            st_doc_map[d.path] = len(st_docs)
-            st_docs = append(st_docs, d)
-            st_doc_paths = append(st_doc_paths, d.path)
+            prev := st_docs[st_doc_map[d.path]]
+            prevsha = prev.sha256
+            prevdel = prev.deleted
+        }
+        if prevsha == d.sha256 && prevdel == 0 { continue }
+        changed = changed + 1
+        row := Doc{path: d.path, sha256: d.sha256, bytes: d.bytes, mtime: d.mtime, gen: st_gen + 1, deleted: 0}
+        dlines = append(dlines, json(row) + "\n")
+        apply_doc_row(row)
+    }
+    // tombstone docs that vanished from the scan (only when docs list is non-empty,
+    // so plumbing `commit` of a partial bundle does not wipe the store)
+    deleted := 0
+    if len(docs) > 0 {
+        for _, p := range st_doc_paths {
+            d0 := st_docs[st_doc_map[p]]
+            if doc_alive(d0) == false { continue }
+            if has(seen, p) { continue }
+            deleted = deleted + 1
+            row2 := Doc{path: p, sha256: d0.sha256, bytes: d0.bytes, mtime: d0.mtime, gen: st_gen + 1, deleted: st_gen + 1}
+            dlines = append(dlines, json(row2) + "\n")
+            apply_doc_row(row2)
+            // tombstone the doc node + incident live edges
+            tombstone_doc_graph(p, st_gen + 1)
         }
     }
     clines := []string{}
     cnew := 0
+    new_chunks := []Chunk{}
     for _, c := range chunks {
         if has(st_chunk_map, c.id) { continue }
         st_chunk_map[c.id] = len(st_chunks)
         st_chunks = append(st_chunks, c)
         clines = append(clines, json(c) + "\n")
+        new_chunks = append(new_chunks, c)
         cnew = cnew + 1
     }
+    nlines := []string{}
+    nnew := 0
+    for _, n := range nodes {
+        if has(st_node_map, n.id) {
+            cur := st_nodes[st_node_map[n.id]]
+            if cur.gen_removed == 0 { continue }
+            // re-add a previously tombstoned node
+        }
+        rown := Node{id: n.id, kind: n.kind, name: n.name, attrs: n.attrs, gen_added: st_gen + 1, gen_removed: 0}
+        nlines = append(nlines, json(rown) + "\n")
+        apply_node_row(rown)
+        nnew = nnew + 1
+    }
+    elines := []string{}
+    enew := 0
+    for _, e := range edges {
+        if has(st_edge_map, e.id) {
+            cur2 := st_edges[st_edge_map[e.id]]
+            if cur2.gen_removed == 0 { continue }
+        }
+        rowe := Edge{id: e.id, src: e.src, rel: e.rel, dst: e.dst, weight: e.weight, source: e.source, provenance: e.provenance, gen_added: st_gen + 1, gen_removed: 0}
+        elines = append(elines, json(rowe) + "\n")
+        apply_edge_row(rowe)
+        enew = enew + 1
+    }
+    // flush graph tombstones queued by tombstone_doc_graph
+    if st_tomb_nodes != "" { nlines = append(nlines, st_tomb_nodes)  st_tomb_nodes = "" }
+    if st_tomb_edges != "" { elines = append(elines, st_tomb_edges)  st_tomb_edges = "" }
+
     append_lines(st_dir + "/docs.jsonl", join(dlines, ""))
     append_lines(st_dir + "/chunks.jsonl", join(clines, ""))
+    append_lines(st_dir + "/nodes.jsonl", join(nlines, ""))
+    append_lines(st_dir + "/edges.jsonl", join(elines, ""))
     st_gen = st_gen + 1
-    rec := CommitRec{gen: st_gen, ts: now(), op: op, docs_seen: len(docs), docs_changed: changed, chunks_new: cnew, chunks_total: len(st_chunks)}
+    rec := CommitRec{gen: st_gen, ts: now(), op: op, docs_seen: len(docs), docs_changed: changed, docs_deleted: deleted, chunks_new: cnew, chunks_total: len(st_chunks), nodes_new: nnew, edges_new: enew}
     append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")
-    if cnew > 0 { bm25_save() }
-    stats = SyncStats{gen: st_gen, docs_seen: len(docs), docs_changed: changed, chunks_new: cnew, chunks_total: len(st_chunks), ms: 0}
+    if cnew > 0 { bm25_add_chunks(new_chunks) }
+    stats = SyncStats{gen: st_gen, docs_seen: len(docs), docs_changed: changed, docs_deleted: deleted, chunks_new: cnew, chunks_total: len(st_chunks), nodes_new: nnew, edges_new: enew, nodes_total: live_node_count(), edges_total: live_edge_count(), ms: 0}
+}
+
+// pending tombstone lines flushed at end of store_commit
+var st_tomb_nodes = ""
+var st_tomb_edges = ""
+
+func tombstone_doc_graph(path, gen) {
+    did := "doc:" + path
+    if has(st_node_map, did) {
+        n := st_nodes[st_node_map[did]]
+        if n.gen_removed == 0 {
+            n.gen_removed = gen
+            apply_node_row(n)
+            st_tomb_nodes = st_tomb_nodes + json(n) + "\n"
+        }
+    }
+    i := 0
+    while i < len(st_edges) {
+        e := st_edges[i]
+        if e.gen_removed == 0 && (e.src == did || e.dst == did) {
+            e.gen_removed = gen
+            apply_edge_row(e)
+            st_tomb_edges = st_tomb_edges + json(e) + "\n"
+        }
+        i = i + 1
+    }
 }
 
 // write_atomic writes temp-then-rename (crash-safe index files).
@@ -140,9 +280,21 @@ func write_atomic(file, content) {
     _, _, _ := exec("mv -f " + q1 + " " + q2)
 }
 
-type StoreStatus struct { gen int  docs int  chunks int  bytes int }
+type StoreStatus struct { gen int  docs int  docs_deleted int  chunks int  nodes int  edges int  vectors int  vec_dim int  bytes int }
 
 func store_status() (s, err) {
     err = store_load()
-    s = StoreStatus{gen: st_gen, docs: len(st_docs), chunks: len(st_chunks), bytes: st_disk_bytes}
+    alive := 0
+    dead := 0
+    for _, d := range st_docs {
+        if doc_alive(d) { alive = alive + 1 } else { dead = dead + 1 }
+    }
+    s = StoreStatus{gen: st_gen, docs: alive, docs_deleted: dead, chunks: len(st_chunks), nodes: live_node_count(), edges: live_edge_count(), vectors: live_vec_count(), vec_dim: st_vec_dim, bytes: st_disk_bytes}
+}
+
+// doc_is_deleted reports whether a doc path is tombstoned (or unknown).
+func doc_is_deleted(path) (yes) {
+    yes = false
+    if has(st_doc_map, path) == false { return }
+    yes = st_docs[st_doc_map[path]].deleted != 0
 }

@@ -1,0 +1,253 @@
+// glane — graph query: neighbors / path / subgraph over live nodes+edges.
+// Live = gen_removed == 0. Pure graph ops; no BM25, no vectors.
+
+type GraphNeighbor struct { edge string  rel string  dir string  node string  kind string  name string }
+type GraphPath struct { nodes []string  edges []string  hops int }
+type GraphSub struct { nodes []Node  edges []Edge }
+
+func node_live(n) (yes) { yes = n.gen_removed == 0 }
+func edge_live(e) (yes) { yes = e.gen_removed == 0 }
+
+func find_node(id) (n, ok) {
+    ok = false
+    n = Node{}
+    if has(st_node_map, id) == false { return }
+    n = st_nodes[st_node_map[id]]
+    if node_live(n) == false { return }
+    ok = true
+}
+
+// adj_out / adj_in: edge indices for a node id (live only).
+func collect_adj(id, dir) (eix) {
+    eix = []int{}
+    i := 0
+    while i < len(st_edges) {
+        e := st_edges[i]
+        if edge_live(e) == false { i = i + 1  continue }
+        if (dir == "out" || dir == "both") && e.src == id { eix = append(eix, i) }
+        if (dir == "in" || dir == "both") && e.dst == id { eix = append(eix, i) }
+        i = i + 1
+    }
+}
+
+func query_neighbors(id, rel, dir) (hits, err) {
+    hits = []GraphNeighbor{}
+    err = 0
+    _, ok := find_node(id)
+    if ok == false { err = 86  return }
+    if dir == "" { dir = "both" }
+    for _, ei := range collect_adj(id, dir) {
+        e := st_edges[ei]
+        if rel != "" && e.rel != rel { continue }
+        other := e.dst
+        d := "out"
+        if e.dst == id { other = e.src  d = "in" }
+        // both-direction self-loop edge: report once as out
+        if e.src == id && e.dst == id { d = "out"  other = id }
+        on, ook := find_node(other)
+        kind := ""
+        name := other
+        if ook { kind = on.kind  name = on.name }
+        hits = append(hits, GraphNeighbor{edge: e.id, rel: e.rel, dir: d, node: other, kind: kind, name: name})
+    }
+}
+
+// query_path: BFS shortest path src → dst, max hops.
+func query_path(src, dst, maxhops) (path, err) {
+    path = GraphPath{nodes: []string{}, edges: []string{}, hops: 0}
+    err = 0
+    _, ok1 := find_node(src)
+    _, ok2 := find_node(dst)
+    if ok1 == false || ok2 == false { err = 86  return }
+    if src == dst {
+        ns := []string{}
+        ns = append(ns, src)
+        path = GraphPath{nodes: ns, edges: []string{}, hops: 0}
+        return
+    }
+    if maxhops < 1 { maxhops = 8 }
+    // prev_node[id] = previous node; prev_edge[id] = edge used to reach id
+    prev_node := make(map[string]string)
+    prev_edge := make(map[string]string)
+    dist := make(map[string]int)
+    queue := []string{}
+    queue = append(queue, src)
+    dist[src] = 0
+    found := false
+    qi := 0
+    while qi < len(queue) {
+        cur := queue[qi]
+        qi = qi + 1
+        if dist[cur] >= maxhops { continue }
+        for _, ei := range collect_adj(cur, "both") {
+            e := st_edges[ei]
+            nxt := e.dst
+            if e.src != cur { nxt = e.src }
+            if has(dist, nxt) { continue }
+            dist[nxt] = dist[cur] + 1
+            prev_node[nxt] = cur
+            prev_edge[nxt] = e.id
+            if nxt == dst { found = true  break }
+            queue = append(queue, nxt)
+        }
+        if found { break }
+    }
+    if found == false { err = 87  return }
+    // reconstruct
+    nodes_rev := []string{}
+    edges_rev := []string{}
+    cur2 := dst
+    while cur2 != src {
+        nodes_rev = append(nodes_rev, cur2)
+        edges_rev = append(edges_rev, prev_edge[cur2])
+        cur2 = prev_node[cur2]
+    }
+    nodes_rev = append(nodes_rev, src)
+    // reverse
+    ns2 := []string{}
+    es2 := []string{}
+    i := len(nodes_rev) - 1
+    while i >= 0 { ns2 = append(ns2, nodes_rev[i])  i = i - 1 }
+    j := len(edges_rev) - 1
+    while j >= 0 { es2 = append(es2, edges_rev[j])  j = j - 1 }
+    path = GraphPath{nodes: ns2, edges: es2, hops: len(es2)}
+}
+
+// query_subgraph: BFS ball around id up to depth.
+func query_subgraph(id, depth) (sub, err) {
+    sub = GraphSub{nodes: []Node{}, edges: []Edge{}}
+    err = 0
+    n0, ok := find_node(id)
+    if ok == false { err = 86  return }
+    if depth < 0 { depth = 1 }
+    seen_n := make(map[string]int)
+    seen_e := make(map[string]int)
+    dist := make(map[string]int)
+    queue := []string{}
+    queue = append(queue, id)
+    dist[id] = 0
+    seen_n[id] = 1
+    nodes := []Node{}
+    nodes = append(nodes, n0)
+    edges := []Edge{}
+    qi := 0
+    while qi < len(queue) {
+        cur := queue[qi]
+        qi = qi + 1
+        if dist[cur] >= depth { continue }
+        for _, ei := range collect_adj(cur, "both") {
+            e := st_edges[ei]
+            if has(seen_e, e.id) == false {
+                seen_e[e.id] = 1
+                edges = append(edges, e)
+            }
+            nxt := e.dst
+            if e.src != cur { nxt = e.src }
+            if has(seen_n, nxt) { continue }
+            on, ook := find_node(nxt)
+            if ook == false { continue }
+            seen_n[nxt] = 1
+            dist[nxt] = dist[cur] + 1
+            nodes = append(nodes, on)
+            queue = append(queue, nxt)
+        }
+    }
+    sub = GraphSub{nodes: sort_nodes(nodes), edges: sort_edges(edges)}
+}
+
+func neighbors_json(hits) (s) {
+    parts := []string{}
+    for _, h := range hits { parts = append(parts, json(h)) }
+    s = "{\"neighbors\":" + json_arr(parts) + "}"
+}
+
+func path_json(p) (s) {
+    nparts := []string{}
+    for _, n := range p.nodes { nparts = append(nparts, json(n)) }
+    eparts := []string{}
+    for _, e := range p.edges { eparts = append(eparts, json(e)) }
+    s = "{\"nodes\":" + json_arr(nparts) + ",\"edges\":" + json_arr(eparts) + ",\"hops\":" + str(p.hops) + "}"
+}
+
+func subgraph_json(sub) (s) {
+    nparts := []string{}
+    for _, n := range sub.nodes { nparts = append(nparts, json(n)) }
+    eparts := []string{}
+    for _, e := range sub.edges { eparts = append(eparts, json(e)) }
+    s = "{\"nodes\":" + json_arr(nparts) + ",\"edges\":" + json_arr(eparts) + "}"
+}
+
+func cmd_query(op, a, start) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    if op == "neighbors" {
+        if start >= len(a) { fail(80, "GLANE_USAGE", "usage: glane query neighbors <node_id> [--rel REL] [--dir out|in|both]", true, []string{"glane help-json"}) }
+        id := a[start]
+        rel := ""
+        dir := "both"
+        i := start + 1
+        while i < len(a) {
+            if a[i] == "--rel" {
+                if i + 1 >= len(a) { fail(80, "GLANE_USAGE", "--rel needs a value", true, []string{}) }
+                rel = a[i + 1]
+                i = i + 2
+                continue
+            }
+            if a[i] == "--dir" {
+                if i + 1 >= len(a) { fail(80, "GLANE_USAGE", "--dir needs out|in|both", true, []string{}) }
+                dir = a[i + 1]
+                if dir != "out" && dir != "in" && dir != "both" { fail(83, "GLANE_BAD_INPUT", "--dir must be out, in, or both", true, []string{}) }
+                i = i + 2
+                continue
+            }
+            fail(80, "GLANE_USAGE", "unknown flag: " + a[i], true, []string{})
+        }
+        hits, err := query_neighbors(id, rel, dir)
+        if err == 86 { fail(86, "GLANE_NO_NODE", "unknown or deleted node: " + id, true, []string{"glane status"}) }
+        println(neighbors_json(hits))
+        return
+    }
+    if op == "path" {
+        if start + 1 >= len(a) { fail(80, "GLANE_USAGE", "usage: glane query path <src> <dst> [--max-hops N]", true, []string{}) }
+        src := a[start]
+        dst := a[start + 1]
+        maxh := 8
+        i2 := start + 2
+        while i2 < len(a) {
+            if a[i2] == "--max-hops" {
+                if i2 + 1 >= len(a) { fail(80, "GLANE_USAGE", "--max-hops needs a number", true, []string{}) }
+                maxh = parse_int(a[i2 + 1])
+                if maxh < 1 { fail(83, "GLANE_BAD_INPUT", "--max-hops must be >= 1", true, []string{}) }
+                i2 = i2 + 2
+                continue
+            }
+            fail(80, "GLANE_USAGE", "unknown flag: " + a[i2], true, []string{})
+        }
+        path, err := query_path(src, dst, maxh)
+        if err == 86 { fail(86, "GLANE_NO_NODE", "unknown or deleted endpoint", true, []string{}) }
+        if err == 87 { fail(87, "GLANE_NO_PATH", "no path within max-hops", true, []string{"try a larger --max-hops"}) }
+        println(path_json(path))
+        return
+    }
+    if op == "subgraph" {
+        if start >= len(a) { fail(80, "GLANE_USAGE", "usage: glane query subgraph <node_id> [--depth N]", true, []string{}) }
+        id2 := a[start]
+        depth := 1
+        i3 := start + 1
+        while i3 < len(a) {
+            if a[i3] == "--depth" {
+                if i3 + 1 >= len(a) { fail(80, "GLANE_USAGE", "--depth needs a number", true, []string{}) }
+                depth = parse_int(a[i3 + 1])
+                if depth < 0 { fail(83, "GLANE_BAD_INPUT", "--depth must be >= 0", true, []string{}) }
+                i3 = i3 + 2
+                continue
+            }
+            fail(80, "GLANE_USAGE", "unknown flag: " + a[i3], true, []string{})
+        }
+        sub, err := query_subgraph(id2, depth)
+        if err == 86 { fail(86, "GLANE_NO_NODE", "unknown or deleted node: " + id2, true, []string{}) }
+        println(subgraph_json(sub))
+        return
+    }
+    fail(80, "GLANE_USAGE", "usage: glane query <neighbors|path|subgraph> ...", true, []string{"glane help-json"})
+}
