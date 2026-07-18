@@ -1,0 +1,89 @@
+// glane — common helpers: version, typed errors, sorting.
+// Exit-code table (semantic, 80–119; documented in `glane guide`):
+//   0  OK
+//   80 GLANE_USAGE      bad usage / unknown command
+//   81 GLANE_NO_STORE   no .glane store in cwd (run `glane init`)
+//   82 GLANE_EXISTS     store already exists (init)
+//   83 GLANE_BAD_INPUT  malformed JSON on stdin / bad flag value
+//   84 GLANE_IO         file read/write failure
+//   85 GLANE_NOT_FOUND  path to scan does not exist
+
+var glane_version = "0.1.0"
+
+// fail prints a typed error JSON on stdout (data channel) and exits.
+func fail(exitcode, code, msg, recoverable, suggestions) {
+    sj := "["
+    for i, s := range suggestions {
+        if i > 0 { sj = sj + "," }
+        sj = sj + json(s)
+    }
+    sj = sj + "]"
+    rec := "false"
+    if recoverable { rec = "true" }
+    println("{\"error\":{\"code\":" + json(code) + ",\"message\":" + json(msg) + ",\"recoverable\":" + rec + ",\"suggestions\":" + sj + "}}")
+    flush()
+    exit(exitcode)
+}
+
+// progress writes a diagnostic line to stderr (stdout stays data-only).
+func progress(msg) {
+    write(2, msg + "\n")
+}
+
+// qsort_str sorts a []string in place (slices are reference types).
+func qsort_str(xs, lo, hi) {
+    if lo >= hi { return }
+    p := xs[(lo + hi) / 2]
+    i := lo
+    j := hi
+    while i <= j {
+        while xs[i] < p { i = i + 1 }
+        while xs[j] > p { j = j - 1 }
+        if i <= j {
+            t := xs[i]  xs[i] = xs[j]  xs[j] = t
+            i = i + 1  j = j - 1
+        }
+    }
+    qsort_str(xs, lo, j)
+    qsort_str(xs, i, hi)
+}
+
+func sort_strings(xs) (out) {
+    out = xs
+    qsort_str(out, 0, len(out) - 1)
+}
+
+// qsort_float sorts a []float ascending, in place.
+func qsort_float(xs, lo, hi) {
+    if lo >= hi { return }
+    p := xs[(lo + hi) / 2]
+    i := lo
+    j := hi
+    while i <= j {
+        while xs[i] < p { i = i + 1 }
+        while xs[j] > p { j = j - 1 }
+        if i <= j {
+            t := xs[i]  xs[i] = xs[j]  xs[j] = t
+            i = i + 1  j = j - 1
+        }
+    }
+    qsort_float(xs, lo, j)
+    qsort_float(xs, i, hi)
+}
+
+// basename returns the path component after the last '/'.
+func basename(p) (b) {
+    b = p
+    i := len(p) - 1
+    while i >= 0 {
+        if charat(p, i) == "/" { b = substr(p, i + 1, len(p))  return }
+        i = i - 1
+    }
+}
+
+// shell_quote wraps a path in single quotes for exec(); rejects embedded quotes.
+func shell_quote(p) (q, ok) {
+    ok = true
+    if contains(p, "'") { ok = false  q = ""  return }
+    q = "'" + p + "'"
+}
