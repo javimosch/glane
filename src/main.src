@@ -51,7 +51,7 @@ func cmd_search(query, limit) {
     lerr := store_load()
     if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
     hits := bm25_search(query, limit)
-    println(json(SearchResults{results: hits}))
+    println(results_json(hits))
 }
 
 func cmd_status() {

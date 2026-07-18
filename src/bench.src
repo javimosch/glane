@@ -16,28 +16,31 @@ func bench_word(i) (w) {
 }
 
 // bench_gen writes one synthetic markdown doc (~1.5-3 KB), streamed to disk.
+// Built via parts+join: string concat garbage is never reclaimed (no GC).
 func bench_gen(dir, i, vocab) {
-    s := "# Document " + str(i) + "\n\n"
+    parts := []string{}
+    parts = append(parts, "# Document " + str(i) + "\n\n")
     sections := 2 + brand(3)
     sec := 0
     while sec < sections {
-        s = s + "## Section " + str(sec) + " " + bench_word(brand(vocab)) + "\n\n"
+        parts = append(parts, "## Section " + str(sec) + " " + bench_word(brand(vocab)) + "\n\n")
         lines := 4 + brand(6)
         ln := 0
         while ln < lines {
             wn := 8 + brand(6)
+            words := []string{}
             k := 0
             while k < wn {
-                s = s + bench_word(brand(vocab)) + " "
+                words = append(words, bench_word(brand(vocab)))
                 k = k + 1
             }
-            s = s + "\n"
+            parts = append(parts, join(words, " ") + "\n")
             ln = ln + 1
         }
-        s = s + "\n"
+        parts = append(parts, "\n")
         sec = sec + 1
     }
-    write_file(dir + "/doc" + str(i) + ".md", s)
+    write_file(dir + "/doc" + str(i) + ".md", join(parts, ""))
 }
 
 type BenchReport struct { docs int  chunks_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int }

@@ -42,15 +42,19 @@ func chunk_text(doc, text) (out) {
     if len(text) == 0 { return }
     if is_markdown(doc) {
         // walk lines, closing a section at each heading line
+        // (byte-wise: substr-of-the-remainder per line would generate
+        // quadratic garbage, and MFL has no GC)
+        tb := bytes(text)
+        nl := bytes("\n")
         secstart := 0
         pos := 0
         n := len(text)
         while pos < n {
-            eol := index(substr(text, pos, n), "\n")
+            eol := bytes_index(tb, nl, pos)
             lineend := n
-            if eol >= 0 { lineend = pos + eol + 1 }
-            line := substr(text, pos, lineend)
-            if has_prefix(line, "#") && pos > secstart {
+            if eol >= 0 { lineend = eol + 1 }
+            heading := byte_at(tb, pos) == 35
+            if heading && pos > secstart {
                 out = window_piece(doc, substr(text, secstart, pos), secstart, out)
                 secstart = pos
             }
@@ -74,17 +78,24 @@ func chunk_docs(docs) (cs) {
     cs = ChunkSet{docs: docs, chunks: all}
 }
 
+// chunkset_json serializes a ChunkSet linearly (json() is quadratic on big slices).
+func chunkset_json(cs) (s) {
+    cparts := []string{}
+    for _, c := range cs.chunks { cparts = append(cparts, json(c)) }
+    s = "{\"docs\":" + docs_json(cs.docs) + ",\"chunks\":" + json_arr(cparts) + "}"
+}
+
 // cmd_chunk reads a manifest (stdin, or --from-scan <path>) -> chunk set JSON.
 func cmd_chunk(fromscan) {
     raw := ""
     if fromscan != "" {
         docs0, err := scan_dir(fromscan)
         if err != 0 { fail(85, "GLANE_NOT_FOUND", "path not found: " + fromscan, true, []string{}) }
-        println(json(chunk_docs(docs0)))
+        println(chunkset_json(chunk_docs(docs0)))
         return
     }
     raw = read_stdin()
     if trim(raw) == "" { fail(83, "GLANE_BAD_INPUT", "expected a scan manifest JSON on stdin (or use --from-scan <path>)", true, []string{"glane scan <path> | glane chunk"}) }
     m := parse(raw, Manifest{})
-    println(json(chunk_docs(m.docs)))
+    println(chunkset_json(chunk_docs(m.docs)))
 }

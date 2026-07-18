@@ -76,10 +76,15 @@ func bm25_build() {
 }
 
 // bm25_save rebuilds from chunks and writes postings.json (temp-then-rename).
+// Serialized element-wise: json() is quadratic on large slices.
 func bm25_save() {
     bm25_build()
-    idx := PIndex{n: bm_n, avgdl: bm_avgdl, chunks: bm_chunks, terms: bm_terms}
-    write_atomic(st_dir + "/bm25/postings.json", json(idx))
+    cparts := []string{}
+    for _, c := range bm_chunks { cparts = append(cparts, json(c)) }
+    tparts := []string{}
+    for _, t := range bm_terms { tparts = append(tparts, "{\"t\":" + json(t.t) + ",\"p\":" + ints_json(t.p) + "}") }
+    s := "{\"n\":" + str(bm_n) + ",\"avgdl\":" + str(bm_avgdl) + ",\"chunks\":" + json_arr(cparts) + ",\"terms\":" + json_arr(tparts) + "}"
+    write_atomic(st_dir + "/bm25/postings.json", s)
 }
 
 // bm25_ensure loads postings.json, or rebuilds from chunks if missing.
@@ -99,6 +104,13 @@ func bm25_ensure() {
 
 type SearchHit struct { chunk string  doc string  score float  span []int  snippet string }
 type SearchResults struct { results []SearchHit }
+
+// results_json serializes hits linearly (json() is quadratic on big slices).
+func results_json(hits) (s) {
+    parts := []string{}
+    for _, h := range hits { parts = append(parts, json(h)) }
+    s = "{\"results\":" + json_arr(parts) + "}"
+}
 
 // snippet_for extracts ~160 chars around the first query-term occurrence.
 func snippet_for(text, qterms) (snip) {

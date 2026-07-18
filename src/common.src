@@ -81,6 +81,20 @@ func basename(p) (b) {
     }
 }
 
+// json_arr joins pre-serialized elements into a JSON array.
+// (Workaround: machin's json() is quadratic on large slices — serializing a
+// 4000-element slice costs ~5s / 8GB RSS. Element-wise json() + join is linear.)
+func json_arr(parts) (s) {
+    s = "[" + join(parts, ",") + "]"
+}
+
+// ints_json serializes []int linearly (same quadratic-json() workaround).
+func ints_json(xs) (s) {
+    ps := []string{}
+    for _, v := range xs { ps = append(ps, str(v)) }
+    s = "[" + join(ps, ",") + "]"
+}
+
 // shell_quote wraps a path in single quotes for exec(); rejects embedded quotes.
 func shell_quote(p) (q, ok) {
     ok = true

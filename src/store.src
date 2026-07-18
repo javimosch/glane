@@ -97,14 +97,14 @@ func store_commit(docs, chunks, op) (stats, err) {
     err = store_load()
     stats = SyncStats{gen: 0, docs_seen: 0, docs_changed: 0, chunks_new: 0, chunks_total: 0, ms: 0}
     if err != 0 { return }
-    dlines := ""
+    dlines := []string{}
     changed := 0
     for _, d := range docs {
         prevsha := ""
         if has(st_doc_map, d.path) { prevsha = st_docs[st_doc_map[d.path]].sha256 }
         if prevsha == d.sha256 { continue }
         changed = changed + 1
-        dlines = dlines + json(d) + "\n"
+        dlines = append(dlines, json(d) + "\n")
         if has(st_doc_map, d.path) {
             st_docs[st_doc_map[d.path]] = d
         } else {
@@ -113,17 +113,17 @@ func store_commit(docs, chunks, op) (stats, err) {
             st_doc_paths = append(st_doc_paths, d.path)
         }
     }
-    clines := ""
+    clines := []string{}
     cnew := 0
     for _, c := range chunks {
         if has(st_chunk_map, c.id) { continue }
         st_chunk_map[c.id] = len(st_chunks)
         st_chunks = append(st_chunks, c)
-        clines = clines + json(c) + "\n"
+        clines = append(clines, json(c) + "\n")
         cnew = cnew + 1
     }
-    append_lines(st_dir + "/docs.jsonl", dlines)
-    append_lines(st_dir + "/chunks.jsonl", clines)
+    append_lines(st_dir + "/docs.jsonl", join(dlines, ""))
+    append_lines(st_dir + "/chunks.jsonl", join(clines, ""))
     st_gen = st_gen + 1
     rec := CommitRec{gen: st_gen, ts: now(), op: op, docs_seen: len(docs), docs_changed: changed, chunks_new: cnew, chunks_total: len(st_chunks)}
     append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")

@@ -99,5 +99,12 @@ func cmd_scan(path) {
     docs, err := scan_dir(path)
     if err == 85 { fail(85, "GLANE_NOT_FOUND", "path not found or not walkable: " + path, true, []string{"check the path exists and is a directory"}) }
     if err != 0 { fail(84, "GLANE_IO", "scan failed on: " + path, true, []string{}) }
-    println(json(Manifest{docs: docs}))
+    println("{\"docs\":" + docs_json(docs) + "}")
+}
+
+// docs_json serializes []Doc linearly (json() is quadratic on big slices).
+func docs_json(docs) (s) {
+    parts := []string{}
+    for _, d := range docs { parts = append(parts, json(d)) }
+    s = json_arr(parts)
 }
