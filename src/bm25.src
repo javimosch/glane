@@ -1,0 +1,177 @@
+// glane — bm25: lexical index + search (k1=1.2, b=0.75).
+// Tokenizer: lowercase alphanumeric runs. Postings live in
+// .glane/bm25/postings.json — rebuildable from chunks.jsonl at any time.
+
+var bm_loaded = false
+var bm_n = 0
+var bm_avgdl = 0.0
+var bm_chunks = []PChunk{}
+var bm_terms = []PTerm{}
+var bm_term_map = make(map[string]int)
+
+type PChunk struct { id string  doc string  dl int }
+type PTerm struct { t string  p []int }
+type PIndex struct { n int  avgdl float  chunks []PChunk  terms []PTerm }
+
+func bm25_reset() {
+    bm_loaded = false
+    bm_n = 0
+    bm_avgdl = 0.0
+    bm_chunks = []PChunk{}
+    bm_terms = []PTerm{}
+    bm_term_map = make(map[string]int)
+}
+
+// tokenize lowers the text and splits it into alphanumeric runs (byte-wise).
+func tokenize(s) (toks) {
+    toks = []string{}
+    b := bytes(s)
+    n := len(b)
+    i := 0
+    start := -1
+    while i <= n {
+        c := 0
+        if i < n { c = byte_at(b, i) }
+        alnum := (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+        if alnum {
+            if start < 0 { start = i }
+        } else {
+            if start >= 0 { toks = append(toks, to_lower(substr(s, start, i)))  start = -1 }
+        }
+        i = i + 1
+    }
+}
+
+// bm25_build rebuilds the in-memory index from the loaded chunks.
+func bm25_build() {
+    bm25_reset()
+    post := make(map[string][]int)
+    total := 0
+    for ci, c := range st_chunks {
+        toks := tokenize(c.text)
+        total = total + len(toks)
+        tf := make(map[string]int)
+        order := []string{}
+        for _, t := range toks {
+            if has(tf, t) == false { order = append(order, t) }
+            tf[t] = tf[t] + 1
+        }
+        for _, t2 := range order {
+            lst := post[t2]
+            lst = append(lst, ci)
+            lst = append(lst, tf[t2])
+            post[t2] = lst
+        }
+        bm_chunks = append(bm_chunks, PChunk{id: c.id, doc: c.doc, dl: len(toks)})
+    }
+    bm_n = len(st_chunks)
+    bm_avgdl = 1.0
+    if bm_n > 0 { bm_avgdl = float(total) / float(bm_n) }
+    terms := sort_strings(keys(post))
+    for _, t3 := range terms {
+        bm_term_map[t3] = len(bm_terms)
+        bm_terms = append(bm_terms, PTerm{t: t3, p: post[t3]})
+    }
+    bm_loaded = true
+}
+
+// bm25_save rebuilds from chunks and writes postings.json (temp-then-rename).
+func bm25_save() {
+    bm25_build()
+    idx := PIndex{n: bm_n, avgdl: bm_avgdl, chunks: bm_chunks, terms: bm_terms}
+    write_atomic(st_dir + "/bm25/postings.json", json(idx))
+}
+
+// bm25_ensure loads postings.json, or rebuilds from chunks if missing.
+func bm25_ensure() {
+    if bm_loaded { return }
+    raw := read_file(st_dir + "/bm25/postings.json")
+    if trim(raw) == "" { bm25_build()  return }
+    idx := parse(raw, PIndex{})
+    bm_n = idx.n
+    bm_avgdl = idx.avgdl
+    if bm_avgdl < 1.0 { bm_avgdl = 1.0 }
+    bm_chunks = idx.chunks
+    bm_terms = idx.terms
+    for i, t := range bm_terms { bm_term_map[t.t] = i }
+    bm_loaded = true
+}
+
+type SearchHit struct { chunk string  doc string  score float  span []int  snippet string }
+type SearchResults struct { results []SearchHit }
+
+// snippet_for extracts ~160 chars around the first query-term occurrence.
+func snippet_for(text, qterms) (snip) {
+    lo := to_lower(text)
+    at := 0
+    for _, t := range qterms {
+        i := index(lo, t)
+        if i >= 0 { at = i  break }
+    }
+    s := at - 60
+    if s < 0 { s = 0 }
+    e := s + 160
+    if e > len(text) { e = len(text) }
+    snip = replace(substr(text, s, e), "\n", " ")
+}
+
+// bm25_search scores stored chunks against a query -> top-limit hits.
+func bm25_search(query, limit) (hits) {
+    hits = []SearchHit{}
+    bm25_ensure()
+    if bm_n == 0 { return }
+    qtoks := tokenize(query)
+    qseen := make(map[string]int)
+    qterms := []string{}
+    for _, qt := range qtoks {
+        if has(qseen, qt) { continue }
+        qseen[qt] = 1
+        qterms = append(qterms, qt)
+    }
+    scores := make(map[int]float)
+    touched := []int{}
+    k1 := 1.2
+    bb := 0.75
+    for _, term := range qterms {
+        if has(bm_term_map, term) == false { continue }
+        pl := bm_terms[bm_term_map[term]].p
+        df := len(pl) / 2
+        idf := log((float(bm_n) - float(df) + 0.5) / (float(df) + 0.5) + 1.0)
+        j := 0
+        while j < len(pl) {
+            ci := pl[j]
+            tf := float(pl[j + 1])
+            dl := float(bm_chunks[ci].dl)
+            sc := idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - bb + bb * dl / bm_avgdl))
+            if has(scores, ci) == false { touched = append(touched, ci) }
+            scores[ci] = scores[ci] + sc
+            j = j + 2
+        }
+    }
+    // selection of top-limit by score desc, tie-break: lower chunk index first
+    picked := make(map[int]int)
+    count := 0
+    while count < limit && count < len(touched) {
+        best := -1
+        for _, ci2 := range touched {
+            if has(picked, ci2) { continue }
+            if best < 0 || scores[ci2] > scores[best] || (scores[ci2] == scores[best] && ci2 < best) { best = ci2 }
+        }
+        if best < 0 { break }
+        picked[best] = 1
+        count = count + 1
+        pc := bm_chunks[best]
+        text := ""
+        sspan := []int{}
+        if has(st_chunk_map, pc.id) {
+            full := st_chunks[st_chunk_map[pc.id]]
+            text = full.text
+            sspan = append(sspan, full.start)
+            sspan = append(sspan, full.end)
+        } else {
+            sspan = append(sspan, 0)
+            sspan = append(sspan, 0)
+        }
+        hits = append(hits, SearchHit{chunk: pc.id, doc: pc.doc, score: scores[best], span: sspan, snippet: snippet_for(text, qterms)})
+    }
+}

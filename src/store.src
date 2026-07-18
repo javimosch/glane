@@ -1,0 +1,148 @@
+// glane — store: the ONE module that owns .glane/ persistence.
+// Layout: config.json, docs.jsonl (latest-wins per path), chunks.jsonl
+// (append-only, content-addressed), commits.jsonl (generation ledger),
+// bm25/postings.json (rebuildable index; written temp-then-rename).
+// M1 swaps this module for grange-backed collections; commands never touch
+// files directly.
+
+var st_dir = ".glane"
+var st_loaded = false
+var st_gen = 0
+var st_doc_paths = []string{}
+var st_doc_map = make(map[string]int)
+var st_docs = []Doc{}
+var st_chunk_map = make(map[string]int)
+var st_chunks = []Chunk{}
+var st_disk_bytes = 0
+
+type CommitRec struct { gen int  ts int  op string  docs_seen int  docs_changed int  chunks_new int  chunks_total int }
+type SyncStats struct { gen int  docs_seen int  docs_changed int  chunks_new int  chunks_total int  ms int }
+
+// store_reset clears in-memory state (used when re-pointing st_dir, e.g. bench).
+func store_reset(dir) {
+    st_dir = dir
+    st_loaded = false
+    st_gen = 0
+    st_doc_paths = []string{}
+    st_doc_map = make(map[string]int)
+    st_docs = []Doc{}
+    st_chunk_map = make(map[string]int)
+    st_chunks = []Chunk{}
+    st_disk_bytes = 0
+    bm25_reset()
+}
+
+func store_exists() (yes) {
+    yes = read_file(st_dir + "/config.json") != ""
+}
+
+// store_init creates the store dir. err: 0 ok, 82 exists, 84 io.
+func store_init() (err) {
+    err = 0
+    if store_exists() { err = 82  return }
+    mkdir(st_dir)
+    mkdir(st_dir + "/bm25")
+    cfg := "{\"name\":\"glane\",\"store_version\":1,\"created\":" + str(now()) + "}"
+    if write_file(st_dir + "/config.json", cfg) < 0 { err = 84  return }
+    write_file(st_dir + "/docs.jsonl", "")
+    write_file(st_dir + "/chunks.jsonl", "")
+    write_file(st_dir + "/commits.jsonl", "")
+}
+
+// store_load reads the whole store into memory. err: 0 ok, 81 no store.
+func store_load() (err) {
+    err = 0
+    if st_loaded { return }
+    if store_exists() == false { err = 81  return }
+    dr := read_file(st_dir + "/docs.jsonl")
+    cr := read_file(st_dir + "/chunks.jsonl")
+    mr := read_file(st_dir + "/commits.jsonl")
+    st_disk_bytes = len(dr) + len(cr) + len(mr) + len(read_file(st_dir + "/config.json")) + len(read_file(st_dir + "/bm25/postings.json"))
+    for _, ln := range split(dr, "\n") {
+        if trim(ln) == "" { continue }
+        d := parse(ln, Doc{})
+        if has(st_doc_map, d.path) {
+            st_docs[st_doc_map[d.path]] = d
+        } else {
+            st_doc_map[d.path] = len(st_docs)
+            st_docs = append(st_docs, d)
+            st_doc_paths = append(st_doc_paths, d.path)
+        }
+    }
+    for _, cln := range split(cr, "\n") {
+        if trim(cln) == "" { continue }
+        c := parse(cln, Chunk{})
+        if has(st_chunk_map, c.id) { continue }
+        st_chunk_map[c.id] = len(st_chunks)
+        st_chunks = append(st_chunks, c)
+    }
+    for _, gln := range split(mr, "\n") {
+        if trim(gln) == "" { continue }
+        rec := parse(gln, CommitRec{})
+        if rec.gen > st_gen { st_gen = rec.gen }
+    }
+    st_loaded = true
+}
+
+// append_lines appends to a jsonl file (read + concat + rewrite; M0-honest).
+func append_lines(file, added) {
+    if added == "" { return }
+    old := read_file(file)
+    write_file(file, old + added)
+}
+
+// store_commit persists a chunk set as a new generation. Unchanged chunk ids
+// are skipped (incremental for free). Returns the stats.
+func store_commit(docs, chunks, op) (stats, err) {
+    err = store_load()
+    stats = SyncStats{gen: 0, docs_seen: 0, docs_changed: 0, chunks_new: 0, chunks_total: 0, ms: 0}
+    if err != 0 { return }
+    dlines := ""
+    changed := 0
+    for _, d := range docs {
+        prevsha := ""
+        if has(st_doc_map, d.path) { prevsha = st_docs[st_doc_map[d.path]].sha256 }
+        if prevsha == d.sha256 { continue }
+        changed = changed + 1
+        dlines = dlines + json(d) + "\n"
+        if has(st_doc_map, d.path) {
+            st_docs[st_doc_map[d.path]] = d
+        } else {
+            st_doc_map[d.path] = len(st_docs)
+            st_docs = append(st_docs, d)
+            st_doc_paths = append(st_doc_paths, d.path)
+        }
+    }
+    clines := ""
+    cnew := 0
+    for _, c := range chunks {
+        if has(st_chunk_map, c.id) { continue }
+        st_chunk_map[c.id] = len(st_chunks)
+        st_chunks = append(st_chunks, c)
+        clines = clines + json(c) + "\n"
+        cnew = cnew + 1
+    }
+    append_lines(st_dir + "/docs.jsonl", dlines)
+    append_lines(st_dir + "/chunks.jsonl", clines)
+    st_gen = st_gen + 1
+    rec := CommitRec{gen: st_gen, ts: now(), op: op, docs_seen: len(docs), docs_changed: changed, chunks_new: cnew, chunks_total: len(st_chunks)}
+    append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")
+    if cnew > 0 { bm25_save() }
+    stats = SyncStats{gen: st_gen, docs_seen: len(docs), docs_changed: changed, chunks_new: cnew, chunks_total: len(st_chunks), ms: 0}
+}
+
+// write_atomic writes temp-then-rename (crash-safe index files).
+func write_atomic(file, content) {
+    tmp := file + ".tmp"
+    write_file(tmp, content)
+    q1, _ := shell_quote(tmp)
+    q2, _ := shell_quote(file)
+    _, _, _ := exec("mv -f " + q1 + " " + q2)
+}
+
+type StoreStatus struct { gen int  docs int  chunks int  bytes int }
+
+func store_status() (s, err) {
+    err = store_load()
+    s = StoreStatus{gen: st_gen, docs: len(st_docs), chunks: len(st_chunks), bytes: st_disk_bytes}
+}
