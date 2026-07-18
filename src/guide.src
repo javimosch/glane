@@ -18,6 +18,8 @@ func help_catalog() (s) {
         "{\"name\":\"log\",\"usage\":\"glane log [--limit N]\",\"summary\":\"generation ledger newest-first (commits.jsonl)\"}," +
         "{\"name\":\"diff\",\"usage\":\"glane diff [<from> <to>]\",\"summary\":\"changes in generations (from, to]; default = last gen vs previous\"}," +
         "{\"name\":\"forget\",\"usage\":\"glane forget <path|doc:path|node-id>\",\"summary\":\"tombstone a live doc or node as a new generation (honest delete)\"}," +
+        "{\"name\":\"context\",\"usage\":\"glane context <task> [--budget N] [--seeds K] [--depth D] [--mode auto|lexical|hybrid|semantic]\",\"summary\":\"token-budgeted context pack: seed search + graph expand + citations (the agent pre-work verb)\"}," +
+        "{\"name\":\"serve\",\"usage\":\"glane serve [--port 7670]\",\"summary\":\"sequential HTTP+MCP server (GET /health|/status, POST /v1/search|/v1/context|/v1/query|/mcp)\"}," +
         "{\"name\":\"status\",\"usage\":\"glane status\",\"summary\":\"store stats JSON (gen, docs, chunks, nodes, edges, vectors, bytes)\"}," +
         "{\"name\":\"bench\",\"usage\":\"glane bench [--docs 1000]\",\"summary\":\"self-benchmark on a synthetic corpus -> one JSON report (sequential, modest RSS; no embed)\"}," +
         "{\"name\":\"guide\",\"usage\":\"glane guide [--human]\",\"summary\":\"embedded operator manual (JSON; --human for text)\"}," +
@@ -33,16 +35,17 @@ func cmd_help_json() {
 
 func cmd_guide(human) {
     if human {
-        println("glane " + glane_version + " -- agent-first knowledge engine (M3: generations + forget)")
+        println("glane " + glane_version + " -- agent-first knowledge engine (M4: context + serve/MCP)")
         println("")
         println("Store: .glane/ — graph is source of truth; BM25 + vectors.jsonl are rebuildable caches.")
-        println("Generations: every sync/commit/forget appends to commits.jsonl (log/diff/forget).")
-        println("Embeddings: optional, localhost-only, hard-capped at 10 vectors/run (smoke-safe).")
+        println("Killer verb:  glane context \"task\" --budget 2000")
+        println("Serve:        glane serve --port 7670   # HTTP + POST /mcp tools")
         println("")
-        println("Pipeline:  glane init && glane sync <path> && glane search <q>")
-        println("           glane log && glane diff && glane forget path/to/doc.md")
+        println("Pipeline:  glane init && glane sync <path>")
+        println("           glane context \"how does sync work\" --budget 1500")
+        println("           glane serve --port 7670")
         println("")
-        println("Exit codes: 0 OK | 80..89 as before | 90 FORGET_MISS")
+        println("Exit codes: 0 OK | 80..90 (see glane guide JSON)")
         return
     }
     ec := "[" +
@@ -66,11 +69,13 @@ func cmd_guide(human) {
         "\"glane log --limit 5\"," +
         "\"glane diff\"," +
         "\"glane forget stale.md\"," +
+        "\"glane context 'how does sync work' --budget 2000\"," +
+        "\"glane serve --port 7670\"," +
         "\"glane search 'error handling' --mode hybrid --limit 5\"," +
         "\"glane bench --docs 1000\"" +
         "]"
     println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\"," +
-        "\"tagline\":\"agent-first knowledge engine: graph-first, versioned generations, BM25 + optional int8 vectors\"," +
+        "\"tagline\":\"agent-first knowledge engine: context packs + HTTP/MCP over a versioned graph store\"," +
         "\"contract\":{\"stdout\":\"JSON data only\",\"stderr\":\"progress/diagnostics\",\"errors\":\"{error:{code,message,recoverable,suggestions}} on stdout\",\"deterministic\":true}," +
         "\"exit_codes\":" + ec + "," +
         "\"store\":" + st + "," +
@@ -78,6 +83,8 @@ func cmd_guide(human) {
         "\"extract\":{\"source\":\"parser\",\"kinds\":[\"doc\",\"chunk\",\"heading\",\"link\",\"symbol\",\"jsonkey\"],\"rels\":[\"has_chunk\",\"has_heading\",\"links_to\",\"refs\",\"defines\",\"has_key\"]}," +
         "\"embed\":{\"url_env\":\"GLANE_EMBED_URL\",\"default_url\":\"http://127.0.0.1:8095/v1/embeddings\",\"dim_env\":\"GLANE_EMBED_DIM\",\"default_dim\":64,\"maxchars_env\":\"GLANE_EMBED_MAXCHARS\",\"default_maxchars\":256,\"hard_max\":10,\"host\":\"localhost/127.0.0.1 only\",\"quant\":\"int8 scale 127\",\"batch\":\"one HTTP call per chunk\",\"sync_embeds\":false}," +
         "\"search\":{\"modes\":[\"lexical\",\"semantic\",\"hybrid\"],\"lexical\":\"BM25 k1=1.2 b=0.75\",\"semantic\":\"int8 cosine brute-force\",\"hybrid\":\"reciprocal rank fusion k=60\"}," +
+        "\"context\":{\"seed\":\"search\",\"expand\":\"graph neighbors + provenance\",\"budget\":\"token estimate chars/4\",\"default_mode\":\"auto (hybrid if vectors else lexical)\"}," +
+        "\"serve\":{\"default_port\":7670,\"model\":\"sequential single-actor\",\"http\":[\"GET /health\",\"GET /status\",\"POST /v1/search\",\"POST /v1/context\",\"POST /v1/query\"],\"mcp\":\"POST /mcp (initialize, tools/list, tools/call)\"}," +
         "\"ignore\":{\"file\":\".glaneignore\",\"rules\":[\"*.ext suffix\",\"dir/ prefix\",\"name exact|basename|prefix\",\"# comment\"],\"always_skipped\":[\".git\",\".glane\",\"binary extensions\",\"NUL-sniffed files\"]}," +
         "\"commands\":" + help_catalog() + "," +
         "\"examples\":" + ex + "}")

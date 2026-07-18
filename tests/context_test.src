@@ -1,0 +1,43 @@
+// context pack: seeds, budget, graph expand — no network.
+
+func main() {
+    tmp := "/tmp/glane-ctx-test-" + str(now_ms())
+    mkdir(tmp)
+    mkdir(tmp + "/docs")
+    write_file(tmp + "/docs/a.md", "# Sync\n\nThe sync path scans then chunks then commits.\n\nSee also [store](store.md).\n")
+    write_file(tmp + "/docs/store.md", "# Store\n\nThe store owns docs chunks nodes edges commits.\n")
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_init(), 0, "init")
+    docs, _ := scan_dir(tmp + "/docs")
+    cs := chunk_docs(docs)
+    nodes, edges := extract_chunks(cs.chunks)
+    _, _ = store_commit(docs, cs.chunks, nodes, edges, "sync")
+
+    assert(est_tokens("abcd") >= 1, "token est")
+    assert_eq_int(est_tokens("abcdefgh"), 2, "8 chars -> 2 tokens")
+
+    pack, err := build_context("sync path chunks commits", 500, 4, 1, "lexical")
+    assert_eq_int(err, 0, "context ok")
+    assert_eq_str(pack.mode, "lexical", "mode lexical")
+    assert(len(pack.chunks) >= 1, "at least one chunk")
+    assert(pack.used > 0, "used > 0")
+    assert(pack.used <= pack.budget, "under budget")
+    assert(len(pack.citations) == len(pack.chunks), "citations match chunks")
+
+    // tiny budget still returns something or empty without error
+    pack2, err2 := build_context("store", 64, 2, 1, "lexical")
+    assert_eq_int(err2, 0, "small budget ok")
+    assert(pack2.used <= 64, "respects 64")
+
+    // budget too small
+    _, err3 := build_context("x", 10, 2, 1, "lexical")
+    assert_eq_int(err3, 83, "budget < 64 -> 83")
+
+    // JSON emits
+    js := context_json(pack)
+    assert(contains(js, "\"chunks\""), "json has chunks")
+    assert(contains(js, "\"citations\""), "json has citations")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}

@@ -84,7 +84,7 @@ func usage_fail(msg) {
 
 func main() {
     a := args()
-    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|log|diff|forget|status|bench|guide|help-json|version|feedback>") }
+    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|context|log|diff|forget|serve|status|bench|guide|help-json|version|feedback>") }
     cmd := a[1]
     if cmd == "version" { cmd_version()  return }
     if cmd == "help-json" { cmd_help_json()  return }
@@ -196,6 +196,62 @@ func main() {
     if cmd == "forget" {
         if len(a) < 3 { usage_fail("usage: glane forget <path|doc:path|node-id>") }
         cmd_forget(a[2])
+        return
+    }
+    if cmd == "context" {
+        if len(a) < 3 { usage_fail("usage: glane context <task> [--budget N] [--seeds K] [--depth D] [--mode auto|lexical|hybrid|semantic]") }
+        task := a[2]
+        budget := 2000
+        seeds := 8
+        depth := 1
+        mode := "auto"
+        i4 := 3
+        while i4 < len(a) {
+            if a[i4] == "--budget" {
+                if i4 + 1 >= len(a) { usage_fail("--budget needs a number") }
+                budget = parse_int(a[i4 + 1])
+                i4 = i4 + 2
+                continue
+            }
+            if a[i4] == "--seeds" {
+                if i4 + 1 >= len(a) { usage_fail("--seeds needs a number") }
+                seeds = parse_int(a[i4 + 1])
+                i4 = i4 + 2
+                continue
+            }
+            if a[i4] == "--depth" {
+                if i4 + 1 >= len(a) { usage_fail("--depth needs a number") }
+                depth = parse_int(a[i4 + 1])
+                i4 = i4 + 2
+                continue
+            }
+            if a[i4] == "--mode" {
+                if i4 + 1 >= len(a) { usage_fail("--mode needs auto|lexical|hybrid|semantic") }
+                mode = a[i4 + 1]
+                i4 = i4 + 2
+                continue
+            }
+            // more task words
+            task = task + " " + a[i4]
+            i4 = i4 + 1
+        }
+        cmd_context(task, budget, seeds, depth, mode)
+        return
+    }
+    if cmd == "serve" {
+        port := 7670
+        i5 := 2
+        while i5 < len(a) {
+            if a[i5] == "--port" {
+                if i5 + 1 >= len(a) { usage_fail("--port needs a number") }
+                port = parse_int(a[i5 + 1])
+                if port < 1 { fail(83, "GLANE_BAD_INPUT", "--port must be positive", true, []string{}) }
+                i5 = i5 + 2
+                continue
+            }
+            usage_fail("usage: glane serve [--port N]")
+        }
+        cmd_serve(port)
         return
     }
     if cmd == "bench" {

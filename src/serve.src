@@ -1,0 +1,266 @@
+// glane — serve: sequential HTTP + MCP face for agents.
+// Single-actor accept loop (no per-request goroutines) so the in-memory store
+// stays race-free. Endpoints are read-mostly; forget/sync stay CLI-only for M4.
+
+func gl_ok(body) (res) { res = ok_json(body) }
+func gl_err(status, code, msg) (res) {
+    res = response(status, "application/json", "{\"error\":{\"code\":" + json(code) + ",\"message\":" + json(msg) + "}}")
+}
+
+func body_str(body, field) (s) {
+    s = ""
+    v, err := json_get(body, "." + field)
+    if len(err) != 0 { return }
+    s = v
+    if len(s) >= 2 && has_prefix(s, "\"") && has_suffix(s, "\"") {
+        s = substr(s, 1, len(s) - 1)
+    }
+}
+
+func body_int(body, field, def) (n) {
+    n = def
+    v, err := json_get(body, "." + field)
+    if len(err) != 0 { return }
+    // raw number token
+    if has_prefix(v, "\"") {
+        v = substr(v, 1, len(v) - 1)
+    }
+    n = parse_int(v)
+}
+
+func handle_search_http(req) (res) {
+    q := body_str(req.body, "query")
+    if q == "" { q = query(req, "q") }
+    if q == "" { res = gl_err("400 Bad Request", "GLANE_BAD_INPUT", "missing query")  return }
+    limit := body_int(req.body, "limit", 10)
+    if limit < 1 { limit = 10 }
+    mode := body_str(req.body, "mode")
+    if mode == "" { mode = "lexical" }
+    hits, err := search_dispatch(q, limit, mode)
+    if err == 89 { res = gl_err("409 Conflict", "GLANE_NO_VECTORS", "no vectors; use mode=lexical or run glane embed")  return }
+    if err == 88 { res = gl_err("502 Bad Gateway", "GLANE_EMBED", "query embed failed")  return }
+    if err == 83 { res = gl_err("400 Bad Request", "GLANE_BAD_INPUT", "bad mode")  return }
+    res = gl_ok(results_json(hits))
+}
+
+func handle_context_http(req) (res) {
+    task := body_str(req.body, "task")
+    if task == "" { task = body_str(req.body, "query") }
+    if task == "" { res = gl_err("400 Bad Request", "GLANE_BAD_INPUT", "missing task")  return }
+    budget := body_int(req.body, "budget", 2000)
+    seeds := body_int(req.body, "seeds", 8)
+    depth := body_int(req.body, "depth", 1)
+    mode := body_str(req.body, "mode")
+    if mode == "" { mode = "auto" }
+    pack, err := build_context(task, budget, seeds, depth, mode)
+    if err == 83 { res = gl_err("400 Bad Request", "GLANE_BAD_INPUT", "budget too small")  return }
+    if err != 0 { res = gl_err("500 Internal Server Error", "GLANE_IO", "context failed")  return }
+    res = gl_ok(context_json(pack))
+}
+
+func handle_query_http(req) (res) {
+    op := body_str(req.body, "op")
+    if op == "" { op = body_str(req.body, "method") }
+    if op == "neighbors" {
+        id := body_str(req.body, "id")
+        rel := body_str(req.body, "rel")
+        dir := body_str(req.body, "dir")
+        if dir == "" { dir = "both" }
+        hits, err := query_neighbors(id, rel, dir)
+        if err == 86 { res = gl_err("404 Not Found", "GLANE_NO_NODE", "unknown node")  return }
+        res = gl_ok(neighbors_json(hits))
+        return
+    }
+    if op == "path" {
+        src := body_str(req.body, "src")
+        dst := body_str(req.body, "dst")
+        maxh := body_int(req.body, "max_hops", 8)
+        path, err := query_path(src, dst, maxh)
+        if err == 86 { res = gl_err("404 Not Found", "GLANE_NO_NODE", "unknown endpoint")  return }
+        if err == 87 { res = gl_err("404 Not Found", "GLANE_NO_PATH", "no path")  return }
+        res = gl_ok(path_json(path))
+        return
+    }
+    if op == "subgraph" {
+        id := body_str(req.body, "id")
+        depth := body_int(req.body, "depth", 1)
+        sub, err := query_subgraph(id, depth)
+        if err == 86 { res = gl_err("404 Not Found", "GLANE_NO_NODE", "unknown node")  return }
+        res = gl_ok(subgraph_json(sub))
+        return
+    }
+    res = gl_err("400 Bad Request", "GLANE_BAD_INPUT", "op must be neighbors|path|subgraph")
+}
+
+func mcp_tools_list() (s) {
+    s = "{\"tools\":[" +
+        "{\"name\":\"glane_context\",\"description\":\"Build a token-budgeted context pack for a task (seed search + graph expand).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"default\":2000},\"seeds\":{\"type\":\"integer\",\"default\":8},\"depth\":{\"type\":\"integer\",\"default\":1},\"mode\":{\"type\":\"string\",\"enum\":[\"auto\",\"lexical\",\"hybrid\",\"semantic\"]}},\"required\":[\"task\"]}}," +
+        "{\"name\":\"glane_search\",\"description\":\"Search the glane store (lexical/semantic/hybrid).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"default\":10},\"mode\":{\"type\":\"string\",\"default\":\"lexical\"}},\"required\":[\"query\"]}}," +
+        "{\"name\":\"glane_status\",\"description\":\"Return glane store status JSON.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}," +
+        "{\"name\":\"glane_query\",\"description\":\"Graph query: neighbors, path, or subgraph.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"neighbors\",\"path\",\"subgraph\"]},\"id\":{\"type\":\"string\"},\"src\":{\"type\":\"string\"},\"dst\":{\"type\":\"string\"},\"rel\":{\"type\":\"string\"},\"dir\":{\"type\":\"string\"},\"depth\":{\"type\":\"integer\"},\"max_hops\":{\"type\":\"integer\"}},\"required\":[\"op\"]}}" +
+        "]}"
+}
+
+func mcp_call_tool(name, args_json) (text, is_err) {
+    text = ""
+    is_err = false
+    if name == "glane_status" {
+        s, err := store_status()
+        if err != 0 { text = "{\"error\":\"no store\"}"  is_err = true  return }
+        text = json(s)
+        return
+    }
+    if name == "glane_search" {
+        q := body_str(args_json, "query")
+        limit := body_int(args_json, "limit", 10)
+        mode := body_str(args_json, "mode")
+        if mode == "" { mode = "lexical" }
+        hits, err := search_dispatch(q, limit, mode)
+        if err != 0 { text = "{\"error\":\"search failed\",\"code\":" + str(err) + "}"  is_err = true  return }
+        text = results_json(hits)
+        return
+    }
+    if name == "glane_context" {
+        task := body_str(args_json, "task")
+        budget := body_int(args_json, "budget", 2000)
+        seeds := body_int(args_json, "seeds", 8)
+        depth := body_int(args_json, "depth", 1)
+        mode := body_str(args_json, "mode")
+        if mode == "" { mode = "auto" }
+        pack, err := build_context(task, budget, seeds, depth, mode)
+        if err != 0 { text = "{\"error\":\"context failed\",\"code\":" + str(err) + "}"  is_err = true  return }
+        text = context_json(pack)
+        return
+    }
+    if name == "glane_query" {
+        fake := args_json
+        op := body_str(fake, "op")
+        if op == "neighbors" {
+            nb, nerr := query_neighbors(body_str(fake, "id"), body_str(fake, "rel"), body_str(fake, "dir"))
+            if nerr != 0 { text = "{\"error\":\"no node\"}"  is_err = true  return }
+            text = neighbors_json(nb)
+            return
+        }
+        if op == "path" {
+            path, perr := query_path(body_str(fake, "src"), body_str(fake, "dst"), body_int(fake, "max_hops", 8))
+            if perr != 0 { text = "{\"error\":\"no path\",\"code\":" + str(perr) + "}"  is_err = true  return }
+            text = path_json(path)
+            return
+        }
+        if op == "subgraph" {
+            sub, serr := query_subgraph(body_str(fake, "id"), body_int(fake, "depth", 1))
+            if serr != 0 { text = "{\"error\":\"no node\"}"  is_err = true  return }
+            text = subgraph_json(sub)
+            return
+        }
+        text = "{\"error\":\"bad op\"}"
+        is_err = true
+        return
+    }
+    text = "{\"error\":\"unknown tool\"}"
+    is_err = true
+}
+
+func handle_mcp(req) (res) {
+    method := body_str(req.body, "method")
+    id_raw, _ := json_get(req.body, ".id")
+    if id_raw == "" { id_raw = "null" }
+    if method == "initialize" {
+        res = gl_ok("{\"jsonrpc\":\"2.0\",\"id\":" + id_raw + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"glane\",\"version\":\"" + glane_version + "\"}}}")
+        return
+    }
+    if method == "notifications/initialized" || method == "ping" {
+        res = gl_ok("{\"jsonrpc\":\"2.0\",\"id\":" + id_raw + ",\"result\":{}}")
+        return
+    }
+    if method == "tools/list" {
+        res = gl_ok("{\"jsonrpc\":\"2.0\",\"id\":" + id_raw + ",\"result\":" + mcp_tools_list() + "}")
+        return
+    }
+    if method == "tools/call" {
+        name := ""
+        nv, ne := json_get(req.body, ".params.name")
+        if len(ne) == 0 {
+            name = nv
+            if has_prefix(name, "\"") { name = substr(name, 1, len(name) - 1) }
+        }
+        args_raw, ae := json_get(req.body, ".params.arguments")
+        args := "{}"
+        if len(ae) == 0 && args_raw != "" && args_raw != "null" { args = args_raw }
+        // arguments may be an object — re-serialize via wrapping: if it looks like object, use as-is
+        text, is_err := mcp_call_tool(name, args)
+        errf := "false"
+        if is_err { errf = "true" }
+        // MCP content: text part
+        content := "[{\"type\":\"text\",\"text\":" + json(text) + "}]"
+        res = gl_ok("{\"jsonrpc\":\"2.0\",\"id\":" + id_raw + ",\"result\":{\"content\":" + content + ",\"isError\":" + errf + "}}")
+        return
+    }
+    res = gl_ok("{\"jsonrpc\":\"2.0\",\"id\":" + id_raw + ",\"error\":{\"code\":-32601,\"message\":\"method not found: " + method + "\"}}")
+}
+
+func glane_http(req) (res) {
+    // ensure store loaded once
+    if store_exists() {
+        load_err := store_load()
+        load_err = load_err
+    }
+    if req.method == "GET" && (req.path == "/health" || req.path == "/healthz") {
+        res = gl_ok("{\"ok\":true,\"name\":\"glane\",\"version\":\"" + glane_version + "\"}")
+        return
+    }
+    if req.method == "GET" && req.path == "/status" {
+        if store_exists() == false { res = gl_err("404 Not Found", "GLANE_NO_STORE", "no .glane store")  return }
+        s, err := store_status()
+        if err != 0 { res = gl_err("404 Not Found", "GLANE_NO_STORE", "no store")  return }
+        res = gl_ok(json(s))
+        return
+    }
+    if req.method == "GET" && req.path == "/guide" {
+        // reuse JSON guide on the wire
+        res = gl_ok("{\"name\":\"glane\",\"version\":\"" + glane_version + "\",\"endpoints\":[\"GET /health\",\"GET /status\",\"POST /v1/search\",\"POST /v1/context\",\"POST /v1/query\",\"POST /mcp\"]}")
+        return
+    }
+    if req.method == "POST" && req.path == "/v1/search" {
+        if store_exists() == false { res = gl_err("404 Not Found", "GLANE_NO_STORE", "no .glane store")  return }
+        res = handle_search_http(req)
+        return
+    }
+    if req.method == "POST" && req.path == "/v1/context" {
+        if store_exists() == false { res = gl_err("404 Not Found", "GLANE_NO_STORE", "no .glane store")  return }
+        res = handle_context_http(req)
+        return
+    }
+    if req.method == "POST" && req.path == "/v1/query" {
+        if store_exists() == false { res = gl_err("404 Not Found", "GLANE_NO_STORE", "no .glane store")  return }
+        res = handle_query_http(req)
+        return
+    }
+    if req.method == "POST" && req.path == "/mcp" {
+        if store_exists() == false && body_str(req.body, "method") != "initialize" {
+            res = gl_err("404 Not Found", "GLANE_NO_STORE", "no .glane store")
+            return
+        }
+        res = handle_mcp(req)
+        return
+    }
+    res = gl_err("404 Not Found", "GLANE_NOT_FOUND", "unknown route; GET /guide")
+}
+
+func cmd_serve(port) {
+    if store_exists() == false { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "store failed to load", false, []string{}) }
+    if port < 1 { port = 7670 }
+    set_max_body(1048576)
+    set_read_timeout(30000)
+    println("{\"ok\":true,\"port\":" + str(port) + ",\"version\":\"" + glane_version + "\",\"endpoints\":[\"/health\",\"/status\",\"/v1/search\",\"/v1/context\",\"/v1/query\",\"/mcp\"]}")
+    flush()
+    progress("serve: http://127.0.0.1:" + str(port) + " (sequential, MCP at POST /mcp)")
+    // single-actor loop — do not use serve()'s per-conn goroutines
+    server := listen(port)
+    for {
+        conn := accept(server)
+        machweb_handle(conn, func(req) { return glane_http(req) })
+    }
+}

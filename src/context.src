@@ -1,0 +1,225 @@
+// glane — context: the killer verb.
+// Seed via search → expand along graph edges → dedupe → pack under a token budget.
+// Token estimate: ceil(chars/4). No LLM calls.
+
+type CtxChunk struct { id string  doc string  text string  score float  why string }
+type CtxEntity struct { id string  kind string  name string }
+type CtxCite struct { chunk string  doc string }
+type ContextPack struct {
+    task string
+    budget int
+    used int
+    mode string
+    chunks []CtxChunk
+    entities []CtxEntity
+    citations []CtxCite
+}
+
+func est_tokens(s) (n) {
+    n = (len(s) + 3) / 4
+    if n < 1 && len(s) > 0 { n = 1 }
+}
+
+// context_seed runs search for the task; prefers hybrid only when vectors exist
+// and mode asks for it — otherwise lexical (localhost-safe default).
+func context_seed(task, limit, mode) (hits, used_mode, err) {
+    hits = []SearchHit{}
+    used_mode = mode
+    err = 0
+    if mode == "" { mode = "auto"  used_mode = "auto" }
+    if mode == "auto" {
+        if live_vec_count() > 0 { used_mode = "hybrid" } else { used_mode = "lexical" }
+    }
+    hits, err = search_dispatch(task, limit, used_mode)
+    // hybrid/semantic embed failure → fall back to lexical
+    if err == 88 || err == 89 {
+        hits = bm25_search(task, limit)
+        used_mode = "lexical"
+        err = 0
+    }
+}
+
+// expand_from_hit collects related live chunk ids via the doc's graph neighborhood.
+func expand_from_hit(h, depth, seen_chunks, seen_nodes, out_chunks, out_nodes) (oc, on) {
+    oc = out_chunks
+    on = out_nodes
+    if has(seen_chunks, h.chunk) == false {
+        seen_chunks[h.chunk] = 1
+        oc = append(oc, h.chunk)
+    }
+    did := "doc:" + h.doc
+    queue := []string{}
+    dist := make(map[string]int)
+    if has(st_node_map, did) {
+        queue = append(queue, did)
+        dist[did] = 0
+        seen_nodes[did] = 1
+        on = append(on, did)
+    }
+    // also seed from chunk node if present
+    cid := "chunk:" + h.chunk
+    if has(st_node_map, cid) && has(seen_nodes, cid) == false {
+        queue = append(queue, cid)
+        dist[cid] = 0
+        seen_nodes[cid] = 1
+        on = append(on, cid)
+    }
+    qi := 0
+    while qi < len(queue) {
+        cur := queue[qi]
+        qi = qi + 1
+        if dist[cur] >= depth { continue }
+        for _, ei := range collect_adj(cur, "both") {
+            e := st_edges[ei]
+            if edge_live(e) == false { continue }
+            nxt := e.dst
+            if e.src != cur { nxt = e.src }
+            if has(seen_nodes, nxt) { continue }
+            on2, ook := find_node(nxt)
+            if ook == false { continue }
+            seen_nodes[nxt] = 1
+            dist[nxt] = dist[cur] + 1
+            on = append(on, nxt)
+            queue = append(queue, nxt)
+            // pull chunks linked from this node
+            if on2.kind == "chunk" && has_prefix(nxt, "chunk:") {
+                chid := substr(nxt, 6, len(nxt))
+                if has(seen_chunks, chid) == false {
+                    seen_chunks[chid] = 1
+                    oc = append(oc, chid)
+                }
+            }
+            if on2.kind == "doc" && has_prefix(nxt, "doc:") {
+                // all has_chunk edges out of this doc
+                for _, ei2 := range collect_adj(nxt, "out") {
+                    e2 := st_edges[ei2]
+                    if edge_live(e2) == false { continue }
+                    if e2.rel != "has_chunk" { continue }
+                    if has_prefix(e2.dst, "chunk:") {
+                        ch2 := substr(e2.dst, 6, len(e2.dst))
+                        if has(seen_chunks, ch2) == false {
+                            seen_chunks[ch2] = 1
+                            oc = append(oc, ch2)
+                        }
+                    }
+                }
+            }
+            // provenance chunk ids on the edge
+            for _, p := range e.provenance {
+                if has(seen_chunks, p) == false {
+                    seen_chunks[p] = 1
+                    oc = append(oc, p)
+                }
+            }
+        }
+    }
+}
+
+func chunk_by_id(id) (c, ok) {
+    ok = false
+    c = Chunk{}
+    if has(st_chunk_map, id) == false { return }
+    c = st_chunks[st_chunk_map[id]]
+    if doc_is_deleted(c.doc) { return }
+    ok = true
+}
+
+// build_context assembles a ContextPack under budget tokens.
+func build_context(task, budget, seeds, depth, mode) (pack, err) {
+    err = 0
+    pack = ContextPack{task: task, budget: budget, used: 0, mode: mode, chunks: []CtxChunk{}, entities: []CtxEntity{}, citations: []CtxCite{}}
+    if budget < 64 { err = 83  return }
+    if seeds < 1 { seeds = 8 }
+    if seeds > 32 { seeds = 32 }
+    if depth < 0 { depth = 1 }
+    if depth > 3 { depth = 3 }
+    hits, used_mode, serr := context_seed(task, seeds, mode)
+    if serr != 0 { err = serr  return }
+    pack.mode = used_mode
+    seed_score := make(map[string]float)
+    seed_why := make(map[string]string)
+    for _, h := range hits {
+        seed_score[h.chunk] = h.score
+        seed_why[h.chunk] = "seed"
+    }
+    seen_c := make(map[string]int)
+    seen_n := make(map[string]int)
+    cand := []string{}
+    ents := []string{}
+    for _, h2 := range hits {
+        cand, ents = expand_from_hit(h2, depth, seen_c, seen_n, cand, ents)
+    }
+    // rank candidates: seed score first, then graph-only at 0
+    // selection loop fills budget
+    picked := make(map[string]int)
+    used := 0
+    // reserve ~10% for entity summaries
+    chunk_budget := (budget * 9) / 10
+    if chunk_budget < 32 { chunk_budget = budget }
+    while used < chunk_budget {
+        best := ""
+        best_sc := -1.0
+        for _, id := range cand {
+            if has(picked, id) { continue }
+            sc := 0.0
+            if has(seed_score, id) { sc = seed_score[id] }
+            if best == "" || sc > best_sc || (sc == best_sc && id < best) {
+                best = id
+                best_sc = sc
+            }
+        }
+        if best == "" { break }
+        picked[best] = 1
+        c, ok := chunk_by_id(best)
+        if ok == false { continue }
+        why := "graph"
+        if has(seed_why, best) { why = seed_why[best] }
+        text := c.text
+        // trim text if a single chunk would blow the remaining budget
+        tok := est_tokens(text)
+        remain := chunk_budget - used
+        if tok > remain && remain > 16 {
+            // approx chars for remain tokens
+            maxc := remain * 4
+            if maxc < len(text) { text = substr(text, 0, maxc)  tok = est_tokens(text) }
+        }
+        if used + tok > chunk_budget && used > 0 { break }
+        pack.chunks = append(pack.chunks, CtxChunk{id: best, doc: c.doc, text: text, score: best_sc, why: why})
+        pack.citations = append(pack.citations, CtxCite{chunk: best, doc: c.doc})
+        used = used + tok
+    }
+    // entity summaries (name + kind), cheapest first, fill remaining budget
+    for _, nid := range ents {
+        if used >= budget { break }
+        n, ok := find_node(nid)
+        if ok == false { continue }
+        if n.kind == "chunk" { continue }
+        line := n.kind + ": " + n.name
+        t := est_tokens(line)
+        if used + t > budget { continue }
+        pack.entities = append(pack.entities, CtxEntity{id: n.id, kind: n.kind, name: n.name})
+        used = used + t
+    }
+    pack.used = used
+}
+
+func context_json(pack) (s) {
+    cparts := []string{}
+    for _, c := range pack.chunks { cparts = append(cparts, json(c)) }
+    eparts := []string{}
+    for _, e := range pack.entities { eparts = append(eparts, json(e)) }
+    iparts := []string{}
+    for _, i := range pack.citations { iparts = append(iparts, json(i)) }
+    s = "{\"task\":" + json(pack.task) + ",\"budget\":" + str(pack.budget) + ",\"used\":" + str(pack.used) + ",\"mode\":" + json(pack.mode) +
+        ",\"chunks\":" + json_arr(cparts) + ",\"entities\":" + json_arr(eparts) + ",\"citations\":" + json_arr(iparts) + "}"
+}
+
+func cmd_context(task, budget, seeds, depth, mode) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    if trim(task) == "" { fail(83, "GLANE_BAD_INPUT", "context needs a task description", true, []string{"glane context \"fix the sync path\" --budget 2000"}) }
+    pack, err := build_context(task, budget, seeds, depth, mode)
+    if err == 83 { fail(83, "GLANE_BAD_INPUT", "--budget must be >= 64", true, []string{}) }
+    if err != 0 { fail(84, "GLANE_IO", "context build failed", false, []string{}) }
+    println(context_json(pack))
+}
