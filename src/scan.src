@@ -1,0 +1,103 @@
+// glane — scan: walk a directory tree into a deterministic doc manifest.
+// One `find` process does the walk (paths + size + mtime in one shot);
+// filtering (.glaneignore, binary sniff) and ordering happen in MFL.
+
+type Doc struct { path string  sha256 string  bytes int  mtime int }
+type Manifest struct { docs []Doc }
+
+// binary extensions skipped without reading the file.
+func is_binary_ext(p) (yes) {
+    yes = false
+    exts := []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".tar", ".7z", ".o", ".a", ".so", ".dylib", ".exe", ".dll", ".bin", ".wasm", ".mfl", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".ogg", ".wav", ".avi", ".mov", ".sqlite", ".db"}
+    lp := to_lower(p)
+    for _, e := range exts {
+        if has_suffix(lp, e) { yes = true  return }
+    }
+}
+
+// looks_binary sniffs the first 4096 bytes for a NUL byte.
+func looks_binary(b) (yes) {
+    n := len(b)
+    if n > 4096 { n = 4096 }
+    idx := bytes_index(bytes_sub(b, 0, n), from_hex("00"), 0)
+    yes = idx >= 0
+}
+
+// load_ignore reads <root>/.glaneignore -> patterns ([] if absent).
+func load_ignore(root) (pats) {
+    pats = []string{}
+    raw := read_file(root + "/.glaneignore")
+    if raw == "" { return }
+    for _, ln := range split(raw, "\n") {
+        p := trim(ln)
+        if p == "" { continue }
+        if has_prefix(p, "#") { continue }
+        pats = append(pats, p)
+    }
+}
+
+// ignored applies gitignore-like prefix/suffix rules to a root-relative path:
+//   "*.log"  -> suffix match          "build/" -> path-prefix (dir) match
+//   "name"   -> exact path, basename, or path-prefix match
+func ignored(relpath, pats) (yes) {
+    yes = false
+    base := basename(relpath)
+    for _, p := range pats {
+        if has_prefix(p, "*") {
+            if has_suffix(relpath, substr(p, 1, len(p))) { yes = true  return }
+            continue
+        }
+        if has_suffix(p, "/") {
+            d := substr(p, 0, len(p) - 1)
+            if has_prefix(relpath, d + "/") { yes = true  return }
+            continue
+        }
+        if relpath == p || base == p || has_prefix(relpath, p + "/") { yes = true  return }
+    }
+}
+
+// scan_dir walks root -> sorted []Doc. err: 0 ok, 85 not found, 84 io.
+func scan_dir(root) (docs, err) {
+    docs = []Doc{}
+    err = 0
+    q, qok := shell_quote(root)
+    if qok == false { err = 85  return }
+    // one process for the whole walk; .git and .glane pruned at the source
+    code, out, _ := exec("find " + q + " '(' -name .git -o -name .glane ')' -prune -o -type f -printf '%P\\t%s\\t%T@\\n' 2>/dev/null")
+    if code != 0 { err = 85  return }
+    pats := load_ignore(root)
+    rels := []string{}
+    meta := make(map[string]string)
+    for _, ln := range split(out, "\n") {
+        if ln == "" { continue }
+        cols := split(ln, "\t")
+        if len(cols) < 3 { continue }
+        rel := cols[0]
+        if rel == "" { continue }
+        if basename(rel) == ".glaneignore" { continue }
+        if is_binary_ext(rel) { continue }
+        if ignored(rel, pats) { continue }
+        rels = append(rels, rel)
+        meta[rel] = cols[2]
+    }
+    rels = sort_strings(rels)
+    prefix := ""
+    if root != "." { prefix = root + "/" }
+    if has_suffix(prefix, "//") { prefix = substr(prefix, 0, len(prefix) - 1) }
+    for _, rel2 := range rels {
+        b := read_file_bytes(root + "/" + rel2)
+        if looks_binary(b) { continue }
+        mt := meta[rel2]
+        dot := index(mt, ".")
+        if dot >= 0 { mt = substr(mt, 0, dot) }
+        docs = append(docs, Doc{path: prefix + rel2, sha256: to_hex(sha256_bytes(b)), bytes: len(b), mtime: parse_int(mt)})
+    }
+}
+
+// cmd_scan prints the manifest JSON for a path.
+func cmd_scan(path) {
+    docs, err := scan_dir(path)
+    if err == 85 { fail(85, "GLANE_NOT_FOUND", "path not found or not walkable: " + path, true, []string{"check the path exists and is a directory"}) }
+    if err != 0 { fail(84, "GLANE_IO", "scan failed on: " + path, true, []string{}) }
+    println(json(Manifest{docs: docs}))
+}
