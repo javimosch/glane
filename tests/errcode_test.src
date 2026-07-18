@@ -52,6 +52,12 @@ func main() {
     c10, _ := run_glane(tmp, "embed --limit 11", "")
     assert_eq_int(c10, 83, "embed --limit 11 -> 83")
 
+    // forget miss
+    c11, o11 := run_glane(tmp, "forget nosuch.md", "")
+    assert_eq_int(c11, 90, "forget miss -> 90")
+    kind11, _ := json_get(o11, ".error.code")
+    assert_eq_str(kind11, "\"GLANE_FORGET_MISS\"", "typed FORGET_MISS")
+
     _, _, _ := exec("rm -rf " + tmp)
     test_summary()
 }

@@ -84,7 +84,7 @@ func usage_fail(msg) {
 
 func main() {
     a := args()
-    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|status|bench|guide|help-json|version|feedback>") }
+    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|log|diff|forget|status|bench|guide|help-json|version|feedback>") }
     cmd := a[1]
     if cmd == "version" { cmd_version()  return }
     if cmd == "help-json" { cmd_help_json()  return }
@@ -160,6 +160,42 @@ func main() {
     if cmd == "query" {
         if len(a) < 3 { usage_fail("usage: glane query <neighbors|path|subgraph> ...") }
         cmd_query(a[2], a, 3)
+        return
+    }
+    if cmd == "log" {
+        limit := 20
+        i3 := 2
+        while i3 < len(a) {
+            if a[i3] == "--limit" {
+                if i3 + 1 >= len(a) { usage_fail("--limit needs a number") }
+                limit = parse_int(a[i3 + 1])
+                if limit < 1 { fail(83, "GLANE_BAD_INPUT", "--limit must be a positive integer", true, []string{}) }
+                i3 = i3 + 2
+                continue
+            }
+            usage_fail("usage: glane log [--limit N]")
+        }
+        cmd_log(limit)
+        return
+    }
+    if cmd == "diff" {
+        from := -1
+        to := -1
+        if len(a) == 2 {
+            cmd_diff(-1, -1)
+            return
+        }
+        if len(a) == 4 {
+            from = parse_int(a[2])
+            to = parse_int(a[3])
+            cmd_diff(from, to)
+            return
+        }
+        usage_fail("usage: glane diff [<from> <to>]")
+    }
+    if cmd == "forget" {
+        if len(a) < 3 { usage_fail("usage: glane forget <path|doc:path|node-id>") }
+        cmd_forget(a[2])
         return
     }
     if cmd == "bench" {

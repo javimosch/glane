@@ -17,6 +17,7 @@ var st_node_map = make(map[string]int)
 var st_nodes = []Node{}
 var st_edge_map = make(map[string]int)
 var st_edges = []Edge{}
+var st_commits = []CommitRec{}
 var st_disk_bytes = 0
 
 type CommitRec struct { gen int  ts int  op string  docs_seen int  docs_changed int  docs_deleted int  chunks_new int  chunks_total int  nodes_new int  edges_new int }
@@ -36,6 +37,7 @@ func store_reset(dir) {
     st_nodes = []Node{}
     st_edge_map = make(map[string]int)
     st_edges = []Edge{}
+    st_commits = []CommitRec{}
     st_disk_bytes = 0
     bm25_reset()
     vec_reset()
@@ -125,6 +127,7 @@ func store_load() (err) {
     for _, gln := range split(mr, "\n") {
         if trim(gln) == "" { continue }
         rec := parse(gln, CommitRec{})
+        st_commits = append(st_commits, rec)
         if rec.gen > st_gen { st_gen = rec.gen }
     }
     for _, vln := range split(vr, "\n") {
@@ -240,6 +243,7 @@ func store_commit(docs, chunks, nodes, edges, op) (stats, err) {
     append_lines(st_dir + "/edges.jsonl", join(elines, ""))
     st_gen = st_gen + 1
     rec := CommitRec{gen: st_gen, ts: now(), op: op, docs_seen: len(docs), docs_changed: changed, docs_deleted: deleted, chunks_new: cnew, chunks_total: len(st_chunks), nodes_new: nnew, edges_new: enew}
+    st_commits = append(st_commits, rec)
     append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")
     if cnew > 0 { bm25_add_chunks(new_chunks) }
     stats = SyncStats{gen: st_gen, docs_seen: len(docs), docs_changed: changed, docs_deleted: deleted, chunks_new: cnew, chunks_total: len(st_chunks), nodes_new: nnew, edges_new: enew, nodes_total: live_node_count(), edges_total: live_edge_count(), ms: 0}

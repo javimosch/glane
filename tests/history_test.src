@@ -1,0 +1,69 @@
+// log / diff / forget against a throwaway store.
+
+func main() {
+    tmp := "/tmp/glane-hist-test-" + str(now_ms())
+    mkdir(tmp)
+    mkdir(tmp + "/docs")
+    write_file(tmp + "/docs/a.md", "# A\n\nhello world\n")
+    write_file(tmp + "/docs/b.md", "# B\n\nsecond doc\n")
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_init(), 0, "init")
+
+    // sync once via store_commit path used by sync
+    docs, _ := scan_dir(tmp + "/docs")
+    cs := chunk_docs(docs)
+    nodes, edges := extract_chunks(cs.chunks)
+    s1, e1 := store_commit(docs, cs.chunks, nodes, edges, "sync")
+    assert_eq_int(e1, 0, "commit1")
+    assert_eq_int(s1.gen, 1, "gen 1")
+    assert(len(st_commits) >= 1, "commits tracked")
+
+    // log newest-first
+    all := load_commits_newest_first()
+    assert_eq_int(all[0].gen, 1, "log head is gen 1")
+    assert_eq_str(all[0].op, "sync", "op sync")
+
+    // touch a.md and re-commit
+    write_file(tmp + "/docs/a.md", "# A\n\nhello world revised\n")
+    docs2, _ := scan_dir(tmp + "/docs")
+    changed := []Doc{}
+    for _, d := range docs2 {
+        prev := ""
+        if has(st_doc_map, d.path) { prev = st_docs[st_doc_map[d.path]].sha256 }
+        if prev != d.sha256 { changed = append(changed, d) }
+    }
+    cs2 := chunk_docs(changed)
+    n2, e2 := extract_chunks(cs2.chunks)
+    s2, _ := store_commit(docs2, cs2.chunks, n2, e2, "sync")
+    assert_eq_int(s2.gen, 2, "gen 2")
+    assert(s2.docs_changed >= 1, "a.md changed")
+
+    rep, derr := build_diff(1, 2)
+    assert_eq_int(derr, 0, "diff ok")
+    assert(len(rep.docs_changed) >= 1, "diff sees doc change")
+
+    // forget b.md
+    kind, key, rerr := resolve_forget_selector(tmp + "/docs/b.md")
+    assert_eq_int(rerr, 0, "resolve b.md")
+    assert_eq_str(kind, "doc", "kind doc")
+    fs, ferr := store_forget(kind, key)
+    assert_eq_int(ferr, 0, "forget ok")
+    assert_eq_int(fs.docs_deleted, 1, "one doc forgotten")
+    assert(doc_is_deleted(tmp + "/docs/b.md"), "b deleted")
+    assert_eq_int(st_gen, 3, "forget bumps gen")
+
+    // forget miss
+    _, ferr2 := store_forget("doc", tmp + "/docs/b.md")
+    assert_eq_int(ferr2, 90, "second forget -> 90")
+
+    // diff 2..3 includes deletion
+    rep2, _ := build_diff(2, 3)
+    assert(len(rep2.docs_deleted) >= 1, "diff sees deletion")
+
+    // bad range
+    _, berr := build_diff(3, 1)
+    assert_eq_int(berr, 83, "inverted range -> 83")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}

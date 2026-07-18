@@ -15,6 +15,9 @@ func help_catalog() (s) {
         "{\"name\":\"embed\",\"usage\":\"glane embed [--limit N]\",\"summary\":\"embed up to N missing chunks via localhost OpenAI-compatible endpoint (hard max 10); writes int8 vectors.jsonl\"}," +
         "{\"name\":\"search\",\"usage\":\"glane search <query> [--limit N] [--mode lexical|semantic|hybrid]\",\"summary\":\"lexical BM25 (default), semantic int8 cosine, or hybrid RRF\"}," +
         "{\"name\":\"query\",\"usage\":\"glane query <neighbors|path|subgraph> ...\",\"summary\":\"graph ops over live nodes/edges (neighbors, shortest path, depth-limited subgraph)\"}," +
+        "{\"name\":\"log\",\"usage\":\"glane log [--limit N]\",\"summary\":\"generation ledger newest-first (commits.jsonl)\"}," +
+        "{\"name\":\"diff\",\"usage\":\"glane diff [<from> <to>]\",\"summary\":\"changes in generations (from, to]; default = last gen vs previous\"}," +
+        "{\"name\":\"forget\",\"usage\":\"glane forget <path|doc:path|node-id>\",\"summary\":\"tombstone a live doc or node as a new generation (honest delete)\"}," +
         "{\"name\":\"status\",\"usage\":\"glane status\",\"summary\":\"store stats JSON (gen, docs, chunks, nodes, edges, vectors, bytes)\"}," +
         "{\"name\":\"bench\",\"usage\":\"glane bench [--docs 1000]\",\"summary\":\"self-benchmark on a synthetic corpus -> one JSON report (sequential, modest RSS; no embed)\"}," +
         "{\"name\":\"guide\",\"usage\":\"glane guide [--human]\",\"summary\":\"embedded operator manual (JSON; --human for text)\"}," +
@@ -30,20 +33,16 @@ func cmd_help_json() {
 
 func cmd_guide(human) {
     if human {
-        println("glane " + glane_version + " -- agent-first knowledge engine (M2: graph + BM25 + int8 vectors)")
+        println("glane " + glane_version + " -- agent-first knowledge engine (M3: generations + forget)")
         println("")
         println("Store: .glane/ — graph is source of truth; BM25 + vectors.jsonl are rebuildable caches.")
+        println("Generations: every sync/commit/forget appends to commits.jsonl (log/diff/forget).")
         println("Embeddings: optional, localhost-only, hard-capped at 10 vectors/run (smoke-safe).")
-        println("  GLANE_EMBED_URL  default http://127.0.0.1:8095/v1/embeddings")
-        println("  GLANE_EMBED_DIM  default 64 (MRL truncate)")
         println("")
-        println("Pipeline:  glane init && glane sync <path>")
-        println("           glane embed --limit 10          # optional, capped")
-        println("           glane search <q> --mode hybrid")
-        println("Composable:  glane scan <path> | glane chunk | glane extract | glane commit")
+        println("Pipeline:  glane init && glane sync <path> && glane search <q>")
+        println("           glane log && glane diff && glane forget path/to/doc.md")
         println("")
-        println("Exit codes: 0 OK | 80 USAGE | 81 NO_STORE | 82 EXISTS | 83 BAD_INPUT | 84 IO")
-        println("  85 NOT_FOUND | 86 NO_NODE | 87 NO_PATH | 88 EMBED | 89 NO_VECTORS")
+        println("Exit codes: 0 OK | 80..89 as before | 90 FORGET_MISS")
         return
     }
     ec := "[" +
@@ -57,19 +56,21 @@ func cmd_guide(human) {
         "{\"exit\":86,\"code\":\"GLANE_NO_NODE\",\"meaning\":\"query target node missing or tombstoned\"}," +
         "{\"exit\":87,\"code\":\"GLANE_NO_PATH\",\"meaning\":\"no path within max-hops\"}," +
         "{\"exit\":88,\"code\":\"GLANE_EMBED\",\"meaning\":\"embedding endpoint error or non-localhost URL\"}," +
-        "{\"exit\":89,\"code\":\"GLANE_NO_VECTORS\",\"meaning\":\"semantic search with empty vector cache\"}" +
+        "{\"exit\":89,\"code\":\"GLANE_NO_VECTORS\",\"meaning\":\"semantic search with empty vector cache\"}," +
+        "{\"exit\":90,\"code\":\"GLANE_FORGET_MISS\",\"meaning\":\"forget selector matches nothing live\"}" +
         "]"
     st := "{\"dir\":\".glane\",\"files\":{\"config.json\":\"store metadata (store_version=3)\",\"docs.jsonl\":\"doc rows, latest-wins per path; deleted=gen tombstone\",\"chunks.jsonl\":\"append-only content-addressed chunks\",\"nodes.jsonl\":\"graph nodes (live = gen_removed==0)\",\"edges.jsonl\":\"graph edges with provenance\",\"commits.jsonl\":\"generation ledger\",\"bm25/postings.json\":\"rebuildable BM25 index\",\"vectors.jsonl\":\"rebuildable int8 embedding cache\",\"feedback.jsonl\":\"operator feedback\"}}"
     ex := "[" +
         "\"glane init\"," +
         "\"glane sync .\"," +
-        "\"glane embed --limit 10\"," +
+        "\"glane log --limit 5\"," +
+        "\"glane diff\"," +
+        "\"glane forget stale.md\"," +
         "\"glane search 'error handling' --mode hybrid --limit 5\"," +
-        "\"glane query neighbors doc:README.md --dir out\"," +
         "\"glane bench --docs 1000\"" +
         "]"
     println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\"," +
-        "\"tagline\":\"agent-first knowledge engine: graph-first + BM25 + optional int8 vectors\"," +
+        "\"tagline\":\"agent-first knowledge engine: graph-first, versioned generations, BM25 + optional int8 vectors\"," +
         "\"contract\":{\"stdout\":\"JSON data only\",\"stderr\":\"progress/diagnostics\",\"errors\":\"{error:{code,message,recoverable,suggestions}} on stdout\",\"deterministic\":true}," +
         "\"exit_codes\":" + ec + "," +
         "\"store\":" + st + "," +

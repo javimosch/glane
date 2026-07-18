@@ -1,0 +1,266 @@
+// glane — history: log / diff / forget over append-only generations.
+// Diff range is (from, to] — changes introduced by generations from+1 .. to.
+
+type DiffReport struct {
+    from int
+    to int
+    docs_changed []string
+    docs_deleted []string
+    nodes_added []string
+    nodes_removed []string
+    edges_added []string
+    edges_removed []string
+    chunks_new int
+}
+
+func in_gen_range(g, from, to) (yes) {
+    yes = g > from && g <= to
+}
+
+// load_commits_newest_first returns commit records, newest first.
+func load_commits_newest_first() (out) {
+    out = []CommitRec{}
+    // reverse copy of st_commits
+    i := len(st_commits) - 1
+    while i >= 0 {
+        out = append(out, st_commits[i])
+        i = i - 1
+    }
+}
+
+func cmd_log(limit) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    if limit < 1 { limit = 20 }
+    all := load_commits_newest_first()
+    parts := []string{}
+    n := 0
+    for _, c := range all {
+        if n >= limit { break }
+        parts = append(parts, json(c))
+        n = n + 1
+    }
+    println("{\"commits\":" + json_arr(parts) + ",\"gen\":" + str(st_gen) + "}")
+}
+
+// diff_docs_jsonl scans docs.jsonl for rows whose gen is in (from, to].
+func diff_docs_jsonl(from, to) (changed, deleted) {
+    changed = []string{}
+    deleted = []string{}
+    seen_c := make(map[string]int)
+    seen_d := make(map[string]int)
+    raw := read_file(st_dir + "/docs.jsonl")
+    for _, ln := range split(raw, "\n") {
+        if trim(ln) == "" { continue }
+        d := parse(ln, Doc{})
+        if in_gen_range(d.gen, from, to) == false { continue }
+        if d.deleted != 0 && in_gen_range(d.deleted, from, to) {
+            if has(seen_d, d.path) == false {
+                seen_d[d.path] = 1
+                deleted = append(deleted, d.path)
+            }
+            continue
+        }
+        if d.deleted == 0 {
+            if has(seen_c, d.path) == false {
+                seen_c[d.path] = 1
+                changed = append(changed, d.path)
+            }
+        }
+    }
+    changed = sort_strings(changed)
+    deleted = sort_strings(deleted)
+}
+
+func build_diff(from, to) (rep, err) {
+    err = 0
+    rep = DiffReport{from: from, to: to, docs_changed: []string{}, docs_deleted: []string{}, nodes_added: []string{}, nodes_removed: []string{}, edges_added: []string{}, edges_removed: []string{}, chunks_new: 0}
+    if to < 1 || from < 0 || from >= to {
+        err = 83
+        return
+    }
+    if to > st_gen { err = 83  return }
+    ch, del := diff_docs_jsonl(from, to)
+    rep.docs_changed = ch
+    rep.docs_deleted = del
+    na := []string{}
+    nr := []string{}
+    for _, n := range st_nodes {
+        if in_gen_range(n.gen_added, from, to) { na = append(na, n.id) }
+        if n.gen_removed != 0 && in_gen_range(n.gen_removed, from, to) { nr = append(nr, n.id) }
+    }
+    rep.nodes_added = sort_strings(na)
+    rep.nodes_removed = sort_strings(nr)
+    ea := []string{}
+    er := []string{}
+    for _, e := range st_edges {
+        if in_gen_range(e.gen_added, from, to) { ea = append(ea, e.id) }
+        if e.gen_removed != 0 && in_gen_range(e.gen_removed, from, to) { er = append(er, e.id) }
+    }
+    rep.edges_added = sort_strings(ea)
+    rep.edges_removed = sort_strings(er)
+    // chunks_new: sum commit.chunks_new for gens in (from, to]
+    for _, c := range st_commits {
+        if in_gen_range(c.gen, from, to) { rep.chunks_new = rep.chunks_new + c.chunks_new }
+    }
+}
+
+func diff_json(rep) (s) {
+    // serialize string lists linearly
+    s = "{\"from\":" + str(rep.from) + ",\"to\":" + str(rep.to) +
+        ",\"docs_changed\":" + str_arr_json(rep.docs_changed) +
+        ",\"docs_deleted\":" + str_arr_json(rep.docs_deleted) +
+        ",\"nodes_added\":" + str_arr_json(rep.nodes_added) +
+        ",\"nodes_removed\":" + str_arr_json(rep.nodes_removed) +
+        ",\"edges_added\":" + str_arr_json(rep.edges_added) +
+        ",\"edges_removed\":" + str_arr_json(rep.edges_removed) +
+        ",\"chunks_new\":" + str(rep.chunks_new) + "}"
+}
+
+func str_arr_json(xs) (s) {
+    parts := []string{}
+    for _, x := range xs { parts = append(parts, json(x)) }
+    s = json_arr(parts)
+}
+
+func cmd_diff(from, to) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    // defaults: last generation vs its predecessor
+    if to < 0 {
+        to = st_gen
+        from = st_gen - 1
+        if from < 0 { from = 0 }
+    }
+    if st_gen == 0 { fail(83, "GLANE_BAD_INPUT", "store has no generations yet", true, []string{"glane sync <path>"}) }
+    rep, err := build_diff(from, to)
+    if err == 83 { fail(83, "GLANE_BAD_INPUT", "diff range must satisfy 0 <= from < to <= gen (" + str(st_gen) + ")", true, []string{"glane log"}) }
+    println(diff_json(rep))
+}
+
+type ForgetStats struct { gen int  forgotten string  kind string  docs_deleted int  nodes_removed int  edges_removed int }
+
+// store_forget tombstones a doc path or node id as a new generation (op=forget).
+func store_forget(kind, key) (stats, err) {
+    err = store_load()
+    stats = ForgetStats{gen: 0, forgotten: key, kind: kind, docs_deleted: 0, nodes_removed: 0, edges_removed: 0}
+    if err != 0 { return }
+    gen := st_gen + 1
+    dlines := ""
+    nlines := ""
+    elines := ""
+    if kind == "doc" {
+        if has(st_doc_map, key) == false { err = 90  return }
+        d0 := st_docs[st_doc_map[key]]
+        if doc_alive(d0) == false { err = 90  return }
+        row := Doc{path: key, sha256: d0.sha256, bytes: d0.bytes, mtime: d0.mtime, gen: gen, deleted: gen}
+        dlines = json(row) + "\n"
+        apply_doc_row(row)
+        stats.docs_deleted = 1
+        st_tomb_nodes = ""
+        st_tomb_edges = ""
+        tombstone_doc_graph(key, gen)
+        nlines = st_tomb_nodes
+        elines = st_tomb_edges
+        st_tomb_nodes = ""
+        st_tomb_edges = ""
+    }
+    if kind == "node" {
+        if has(st_node_map, key) == false { err = 90  return }
+        n0 := st_nodes[st_node_map[key]]
+        if n0.gen_removed != 0 { err = 90  return }
+        n0.gen_removed = gen
+        apply_node_row(n0)
+        nlines = json(n0) + "\n"
+        stats.nodes_removed = 1
+        i := 0
+        while i < len(st_edges) {
+            e := st_edges[i]
+            if e.gen_removed == 0 && (e.src == key || e.dst == key) {
+                e.gen_removed = gen
+                apply_edge_row(e)
+                elines = elines + json(e) + "\n"
+                stats.edges_removed = stats.edges_removed + 1
+            }
+            i = i + 1
+        }
+        // if forgetting a doc: node, also tombstone the doc row
+        if has_prefix(key, "doc:") {
+            path := substr(key, 4, len(key))
+            if has(st_doc_map, path) {
+                d1 := st_docs[st_doc_map[path]]
+                if doc_alive(d1) {
+                    row2 := Doc{path: path, sha256: d1.sha256, bytes: d1.bytes, mtime: d1.mtime, gen: gen, deleted: gen}
+                    dlines = dlines + json(row2) + "\n"
+                    apply_doc_row(row2)
+                    stats.docs_deleted = stats.docs_deleted + 1
+                }
+            }
+        }
+    }
+    if kind != "doc" && kind != "node" { err = 83  return }
+    // count node/edge tombstones written for doc forget
+    if kind == "doc" {
+        for _, ln := range split(nlines, "\n") { if trim(ln) != "" { stats.nodes_removed = stats.nodes_removed + 1 } }
+        for _, ln2 := range split(elines, "\n") { if trim(ln2) != "" { stats.edges_removed = stats.edges_removed + 1 } }
+    }
+    append_lines(st_dir + "/docs.jsonl", dlines)
+    append_lines(st_dir + "/nodes.jsonl", nlines)
+    append_lines(st_dir + "/edges.jsonl", elines)
+    st_gen = gen
+    rec := CommitRec{gen: st_gen, ts: now(), op: "forget", docs_seen: 0, docs_changed: 0, docs_deleted: stats.docs_deleted, chunks_new: 0, chunks_total: len(st_chunks), nodes_new: 0, edges_new: 0}
+    st_commits = append(st_commits, rec)
+    append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")
+    stats.gen = st_gen
+}
+
+// resolve_forget_selector maps CLI arg → (kind, key).
+// Accepts: path, doc:path, node id (doc:/symbol:/heading:/…).
+func resolve_forget_selector(sel) (kind, key, err) {
+    err = 0
+    kind = ""
+    key = ""
+    if sel == "" { err = 83  return }
+    if has_prefix(sel, "doc:") {
+        kind = "doc"
+        key = substr(sel, 4, len(sel))
+        return
+    }
+    // known node id prefixes → node forget
+    if has_prefix(sel, "symbol:") || has_prefix(sel, "heading:") || has_prefix(sel, "link:") || has_prefix(sel, "chunk:") || has_prefix(sel, "jsonkey:") {
+        kind = "node"
+        key = sel
+        return
+    }
+    // bare path → doc
+    if has(st_doc_map, sel) {
+        kind = "doc"
+        key = sel
+        return
+    }
+    // bare node id
+    if has(st_node_map, sel) {
+        kind = "node"
+        key = sel
+        return
+    }
+    // try doc: prefix form as node
+    if has(st_node_map, "doc:" + sel) {
+        kind = "node"
+        key = "doc:" + sel
+        return
+    }
+    err = 90
+}
+
+func cmd_forget(sel) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    kind, key, rerr := resolve_forget_selector(sel)
+    if rerr == 83 { fail(83, "GLANE_BAD_INPUT", "forget needs a selector (path, doc:path, or node id)", true, []string{"glane forget README.md", "glane forget symbol:main"}) }
+    if rerr == 90 { fail(90, "GLANE_FORGET_MISS", "nothing live matches selector: " + sel, true, []string{"glane status", "glane query neighbors doc:" + sel}) }
+    stats, err := store_forget(kind, key)
+    if err == 90 { fail(90, "GLANE_FORGET_MISS", "already forgotten or unknown: " + key, true, []string{}) }
+    if err != 0 { fail(84, "GLANE_IO", "forget failed", false, []string{}) }
+    println(json(stats))
+}

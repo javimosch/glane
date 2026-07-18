@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 ./build.sh
 export GLANE_BIN="$(pwd)/glane"
-LIBS="src/common.src src/scan.src src/chunk.src src/extract.src src/store.src src/bm25.src src/graph.src src/embed.src src/vector.src src/guide.src src/bench.src"
+LIBS="src/common.src src/scan.src src/chunk.src src/extract.src src/store.src src/bm25.src src/graph.src src/embed.src src/vector.src src/history.src src/guide.src src/bench.src"
 fail=0
 for t in tests/*_test.src; do
     echo "== $t" >&2
