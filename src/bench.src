@@ -1,0 +1,111 @@
+// glane — bench: self-benchmark on a synthetic corpus, strictly sequential.
+// Uses an isolated throwaway store under .glane/bench so the user store is
+// never polluted; cleaned up afterwards.
+
+var bench_seed = 42
+
+// brand is a deterministic LCG (no global rand -> reproducible corpora).
+func brand(mod) (r) {
+    bench_seed = (bench_seed * 1103515245 + 12345) % 2147483648
+    if bench_seed < 0 { bench_seed = 0 - bench_seed }
+    r = bench_seed % mod
+}
+
+func bench_word(i) (w) {
+    w = "term" + str(i)
+}
+
+// bench_gen writes one synthetic markdown doc (~1.5-3 KB), streamed to disk.
+func bench_gen(dir, i, vocab) {
+    s := "# Document " + str(i) + "\n\n"
+    sections := 2 + brand(3)
+    sec := 0
+    while sec < sections {
+        s = s + "## Section " + str(sec) + " " + bench_word(brand(vocab)) + "\n\n"
+        lines := 4 + brand(6)
+        ln := 0
+        while ln < lines {
+            wn := 8 + brand(6)
+            k := 0
+            while k < wn {
+                s = s + bench_word(brand(vocab)) + " "
+                k = k + 1
+            }
+            s = s + "\n"
+            ln = ln + 1
+        }
+        s = s + "\n"
+        sec = sec + 1
+    }
+    write_file(dir + "/doc" + str(i) + ".md", s)
+}
+
+type BenchReport struct { docs int  chunks_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int }
+
+// bench_sync runs scan->chunk changed->commit against the bench store.
+func bench_sync(root) (stats) {
+    docs, _ := scan_dir(root)
+    changed := []Doc{}
+    for _, d := range docs {
+        prev := ""
+        if has(st_doc_map, d.path) { prev = st_docs[st_doc_map[d.path]].sha256 }
+        if prev != d.sha256 { changed = append(changed, d) }
+    }
+    cs := chunk_docs(changed)
+    stats, _ = store_commit(docs, cs.chunks, "sync")
+}
+
+func cmd_bench(ndocs) {
+    if store_exists() == false { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    bench_seed = 42
+    vocab := 400
+    base := st_dir + "/bench"
+    corpus := base + "/corpus"
+    _, _, _ := exec("rm -rf " + base)
+    mkdir(base)
+    mkdir(corpus)
+    progress("bench: generating " + str(ndocs) + " docs...")
+    i := 0
+    while i < ndocs {
+        bench_gen(corpus, i, vocab)
+        i = i + 1
+    }
+    // isolated store
+    bstore := base + "/store"
+    userdir := st_dir
+    store_reset(bstore)
+    store_init()
+    progress("bench: cold sync...")
+    t0 := now_ms()
+    cold := bench_sync(corpus)
+    cold_ms := now_ms() - t0
+    // touch 10 docs
+    j := 0
+    while j < 10 {
+        p := corpus + "/doc" + str(j * (ndocs / 10)) + ".md"
+        write_file(p, read_file(p) + "\ntouched revision line " + str(j) + "\n")
+        j = j + 1
+    }
+    progress("bench: incremental sync...")
+    t1 := now_ms()
+    incr := bench_sync(corpus)
+    incr_ms := now_ms() - t1
+    progress("bench: 20 searches...")
+    times := []float{}
+    q := 0
+    while q < 20 {
+        qs := bench_word(brand(vocab)) + " " + bench_word(brand(vocab))
+        t2 := now_ms()
+        bm25_search(qs, 10)
+        times = append(times, float(now_ms() - t2))
+    q = q + 1
+    }
+    qsort_float(times, 0, len(times) - 1)
+    p50 := int(times[9])
+    p95 := int(times[18])
+    rep := BenchReport{docs: ndocs, chunks_total: incr.chunks_total, cold_sync_ms: cold_ms, incr_sync_ms: incr_ms, incr_docs_changed: incr.docs_changed, search_queries: 20, search_p50_ms: p50, search_p95_ms: p95}
+    store_reset(userdir)
+    _, _, _ := exec("rm -rf " + base)
+    println(json(rep))
+    if cold.gen == 0 { progress("bench: warning, cold sync produced no generation") }
+}

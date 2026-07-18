@@ -1,0 +1,85 @@
+// glane — guide / help-json / version: the embedded operator manual.
+
+func cmd_version() {
+    println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\"}")
+}
+
+func help_catalog() (s) {
+    s = "[" +
+        "{\"name\":\"init\",\"usage\":\"glane init\",\"summary\":\"create the .glane store in cwd\"}," +
+        "{\"name\":\"scan\",\"usage\":\"glane scan <path>\",\"summary\":\"walk files -> doc manifest JSON on stdout (respects .glaneignore; skips .git/.glane/binaries)\"}," +
+        "{\"name\":\"chunk\",\"usage\":\"glane chunk [--from-scan <path>]\",\"summary\":\"manifest JSON on stdin -> content-addressed chunks JSON (markdown-aware, ~2000-byte windows)\"}," +
+        "{\"name\":\"commit\",\"usage\":\"glane commit\",\"summary\":\"chunks JSON on stdin -> persist as a new generation (known chunk ids skipped)\"}," +
+        "{\"name\":\"sync\",\"usage\":\"glane sync <path>\",\"summary\":\"scan+chunk+commit in-process -> stats JSON\"}," +
+        "{\"name\":\"search\",\"usage\":\"glane search <query> [--limit N]\",\"summary\":\"BM25 (k1=1.2, b=0.75) over stored chunks -> ranked results JSON\"}," +
+        "{\"name\":\"status\",\"usage\":\"glane status\",\"summary\":\"store stats JSON (gen, docs, chunks, bytes)\"}," +
+        "{\"name\":\"bench\",\"usage\":\"glane bench [--docs 1000]\",\"summary\":\"self-benchmark on a synthetic corpus -> one JSON report (sequential, modest RSS)\"}," +
+        "{\"name\":\"guide\",\"usage\":\"glane guide [--human]\",\"summary\":\"embedded operator manual (JSON; --human for text)\"}," +
+        "{\"name\":\"help-json\",\"usage\":\"glane help-json\",\"summary\":\"this machine-readable command catalog\"}," +
+        "{\"name\":\"version\",\"usage\":\"glane version\",\"summary\":\"name + semver JSON\"}," +
+        "{\"name\":\"feedback\",\"usage\":\"glane feedback <text>\",\"summary\":\"append feedback to .glane/feedback.jsonl (never fails)\"}" +
+        "]"
+}
+
+func cmd_help_json() {
+    println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\",\"commands\":" + help_catalog() + "}")
+}
+
+func cmd_guide(human) {
+    if human {
+        println("glane " + glane_version + " -- agent-first knowledge engine (M0: ingest + lexical search)")
+        println("")
+        println("Store: a .glane/ dir in cwd. Graph-first design; M0 persists docs+chunks+commits")
+        println("as JSONL plus a rebuildable BM25 postings index. Deterministic: same input, same output.")
+        println("")
+        println("Pipeline:  glane init && glane sync <path> && glane search <query>")
+        println("Composable:  glane scan <path> | glane chunk | glane commit")
+        println("")
+        println("Contract: stdout = JSON data only; stderr = diagnostics; errors are typed JSON")
+        println("{error:{code,message,recoverable,suggestions}} with semantic exit codes:")
+        println("  0 OK | 80 USAGE | 81 NO_STORE | 82 EXISTS | 83 BAD_INPUT | 84 IO | 85 NOT_FOUND")
+        println("")
+        println("Chunking: markdown splits on heading lines; anything over ~2000 bytes windows on")
+        println("line boundaries. Chunk id = sha256(text), so commits are incremental for free.")
+        return
+    }
+    ec := "[" +
+        "{\"exit\":0,\"code\":\"OK\",\"meaning\":\"success\"}," +
+        "{\"exit\":80,\"code\":\"GLANE_USAGE\",\"meaning\":\"bad usage or unknown command\"}," +
+        "{\"exit\":81,\"code\":\"GLANE_NO_STORE\",\"meaning\":\"no .glane store in cwd; run glane init\"}," +
+        "{\"exit\":82,\"code\":\"GLANE_EXISTS\",\"meaning\":\"store already exists\"}," +
+        "{\"exit\":83,\"code\":\"GLANE_BAD_INPUT\",\"meaning\":\"malformed JSON on stdin or bad flag value\"}," +
+        "{\"exit\":84,\"code\":\"GLANE_IO\",\"meaning\":\"file read/write failure\"}," +
+        "{\"exit\":85,\"code\":\"GLANE_NOT_FOUND\",\"meaning\":\"scan path does not exist\"}" +
+        "]"
+    st := "{\"dir\":\".glane\",\"files\":{\"config.json\":\"store metadata\",\"docs.jsonl\":\"doc rows, latest-wins per path\",\"chunks.jsonl\":\"append-only content-addressed chunks\",\"commits.jsonl\":\"generation ledger {gen,ts,op,stats}\",\"bm25/postings.json\":\"rebuildable BM25 index (temp-then-rename)\",\"feedback.jsonl\":\"operator feedback\"}}"
+    ex := "[" +
+        "\"glane init\"," +
+        "\"glane sync ./docs\"," +
+        "\"glane search 'error handling' --limit 5\"," +
+        "\"glane scan . | glane chunk | glane commit\"," +
+        "\"glane bench --docs 1000\"" +
+        "]"
+    println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\"," +
+        "\"tagline\":\"agent-first knowledge engine: deterministic ingest + BM25 search, zero LLM, zero network\"," +
+        "\"contract\":{\"stdout\":\"JSON data only\",\"stderr\":\"progress/diagnostics\",\"errors\":\"{error:{code,message,recoverable,suggestions}} on stdout\",\"deterministic\":true}," +
+        "\"exit_codes\":" + ec + "," +
+        "\"store\":" + st + "," +
+        "\"chunking\":{\"markdown\":\"split on heading lines\",\"window_bytes\":2000,\"boundary\":\"last newline in window\",\"id\":\"sha256(chunk text)\"}," +
+        "\"search\":{\"algo\":\"BM25\",\"k1\":1.2,\"b\":0.75,\"tokenizer\":\"lowercase alphanumeric runs\"}," +
+        "\"ignore\":{\"file\":\".glaneignore\",\"rules\":[\"*.ext suffix\",\"dir/ prefix\",\"name exact|basename|prefix\",\"# comment\"],\"always_skipped\":[\".git\",\".glane\",\"binary extensions\",\"NUL-sniffed files\"]}," +
+        "\"commands\":" + help_catalog() + "," +
+        "\"examples\":" + ex + "}")
+}
+
+// cmd_feedback appends to .glane/feedback.jsonl; never fails.
+func cmd_feedback(text) {
+    stored := false
+    if store_exists() {
+        append_lines(st_dir + "/feedback.jsonl", "{\"ts\":" + str(now()) + ",\"text\":" + json(text) + "}\n")
+        stored = true
+    }
+    sv := "false"
+    if stored { sv = "true" }
+    println("{\"ok\":true,\"stored\":" + sv + "}")
+}
