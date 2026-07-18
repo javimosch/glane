@@ -35,16 +35,18 @@ func cmd_help_json() {
 
 func cmd_guide(human) {
     if human {
-        println("glane " + glane_version + " -- agent-first knowledge engine (M4: context + serve/MCP)")
+        println("glane " + glane_version + " -- agent-first knowledge engine (M5: self-hosted OSS)")
         println("")
         println("Store: .glane/ — graph is source of truth; BM25 + vectors.jsonl are rebuildable caches.")
         println("Killer verb:  glane context \"task\" --budget 2000")
         println("Serve:        glane serve --port 7670   # HTTP + POST /mcp tools")
+        println("Stance:       OSS self-hosted only — no hosted cloud product.")
         println("")
         println("Pipeline:  glane init && glane sync <path>")
         println("           glane context \"how does sync work\" --budget 1500")
         println("           glane serve --port 7670")
         println("")
+        println("Docs: README.md · llms.txt · ROADMAP.md · docs/vs-cognee.md")
         println("Exit codes: 0 OK | 80..90 (see glane guide JSON)")
         return
     }
@@ -75,7 +77,8 @@ func cmd_guide(human) {
         "\"glane bench --docs 1000\"" +
         "]"
     println("{\"name\":\"glane\",\"version\":\"" + glane_version + "\"," +
-        "\"tagline\":\"agent-first knowledge engine: context packs + HTTP/MCP over a versioned graph store\"," +
+        "\"tagline\":\"agent-first knowledge engine: self-hosted OSS, context packs + HTTP/MCP over a versioned graph\"," +
+        "\"hosting\":\"self-hosted-only\"," +
         "\"contract\":{\"stdout\":\"JSON data only\",\"stderr\":\"progress/diagnostics\",\"errors\":\"{error:{code,message,recoverable,suggestions}} on stdout\",\"deterministic\":true}," +
         "\"exit_codes\":" + ec + "," +
         "\"store\":" + st + "," +

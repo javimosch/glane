@@ -43,7 +43,7 @@ func bench_gen(dir, i, vocab) {
     write_file(dir + "/doc" + str(i) + ".md", join(parts, ""))
 }
 
-type BenchReport struct { docs int  chunks_total int  nodes_total int  edges_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int }
+type BenchReport struct { docs int  chunks_total int  nodes_total int  edges_total int  cold_sync_ms int  incr_sync_ms int  incr_docs_changed int  search_queries int  search_p50_ms int  search_p95_ms int  context_ms int  context_used int  context_chunks int }
 
 // bench_sync runs scan->chunk->extract->commit against the bench store.
 func bench_sync(root) (stats) {
@@ -111,7 +111,11 @@ func cmd_bench(ndocs) {
     qsort_float(times, 0, len(times) - 1)
     p50 := int(times[9])
     p95 := int(times[18])
-    rep := BenchReport{docs: ndocs, chunks_total: incr.chunks_total, nodes_total: incr.nodes_total, edges_total: incr.edges_total, cold_sync_ms: cold_ms, incr_sync_ms: incr_ms, incr_docs_changed: incr.docs_changed, search_queries: 20, search_p50_ms: p50, search_p95_ms: p95}
+    progress("bench: context pack...")
+    t3 := now_ms()
+    pack, _ := build_context("term1 term2 section document", 1500, 8, 1, "lexical")
+    ctx_ms := now_ms() - t3
+    rep := BenchReport{docs: ndocs, chunks_total: incr.chunks_total, nodes_total: incr.nodes_total, edges_total: incr.edges_total, cold_sync_ms: cold_ms, incr_sync_ms: incr_ms, incr_docs_changed: incr.docs_changed, search_queries: 20, search_p50_ms: p50, search_p95_ms: p95, context_ms: ctx_ms, context_used: pack.used, context_chunks: len(pack.chunks)}
     store_reset(userdir)
     _, _, _ := exec("rm -rf " + base)
     println(json(rep))
