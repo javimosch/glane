@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>glane — agent-first, graph-first knowledge engine</title>
+<meta name="description" content="Self-hosted agent memory in one static binary: sync, search, graph query, context packs, HTTP+MCP. No UI. MIT.">
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--fg:#e6edf3;--muted:#8b949e;--accent:#3fb950;--blue:#4f9cf9}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--fg);margin:0;line-height:1.6}
+.wrap{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding:64px 0 40px;text-align:center}
+h1{font-size:44px;margin:0 0 8px;letter-spacing:-.02em}
+h1 .dot{color:var(--accent)}
+.tag{color:var(--muted);font-size:19px;max-width:640px;margin:0 auto}
+.btns{margin:28px 0 0;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px}
+.btn.primary{background:var(--accent);color:#041a0a}
+.btn.ghost{border:1px solid var(--border);color:var(--fg)}
+pre{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px;overflow-x:auto;font-size:13.5px;line-height:1.55}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+p code,li code{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-size:.9em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:26px 0}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+.card h3{margin:0 0 6px;font-size:15px}
+.card p{margin:0;color:var(--muted);font-size:13.5px}
+h2{font-size:22px;margin:52px 0 12px}
+.comment{color:var(--muted)}
+.k{color:var(--blue)}
+.g{color:var(--accent)}
+footer{margin:70px 0 40px;color:var(--muted);font-size:13px;text-align:center;border-top:1px solid var(--border);padding-top:24px}
+a{color:var(--blue)}
+.note{color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>glane<span class="dot">.</span></h1>
+  <p class="tag">Agent-first, graph-first knowledge engine in one static binary.<br><b>There is no UI</b> — self-hosted OSS only.</p>
+  <div class="btns">
+    <a class="btn primary" href="https://github.com/javimosch/glane">GitHub</a>
+    <a class="btn ghost" href="https://github.com/javimosch/glane/releases/latest/download/glane">Download binary</a>
+    <a class="btn ghost" href="changelog.html">Changelog</a>
+    <a class="btn ghost" href="llms.txt">llms.txt</a>
+  </div>
+</header>
+
+<pre><code><span class="comment"># time-to-first-answer from zero</span>
+glane init
+glane sync .
+glane context "how does sync handle deletions?" --budget 2000
+glane serve --port 7670
+<span class="g">{"task":"…","chunks":[…],"citations":[…],"used":1842}</span></code></pre>
+
+<div class="grid">
+  <div class="card"><h3>Graph is truth</h3><p>docs / chunks / nodes / edges / commits in <code>.glane/</code>. BM25 and vectors are rebuildable caches — delete them anytime.</p></div>
+  <div class="card"><h3>Deterministic first</h3><p>Markdown, code, and JSON extractors with provenance. No LLM key required for day-one value.</p></div>
+  <div class="card"><h3>Context packs</h3><p><code>glane context</code> seeds search, expands the graph, and packs citations under a token budget — the verb agents run before work.</p></div>
+  <div class="card"><h3>Versioned knowledge</h3><p>Every sync/commit/forget is a generation. <code>log</code>, <code>diff</code>, and honest <code>forget</code> tombstones included.</p></div>
+  <div class="card"><h3>HTTP + MCP</h3><p><code>glane serve</code> exposes <code>/v1/search</code>, <code>/v1/context</code>, <code>/v1/query</code>, and <code>POST /mcp</code> tools on a sequential race-safe loop.</p></div>
+  <div class="card"><h3>Agent-native CLI</h3><p>JSON stdout, typed errors, exits 80–119, embedded <code>guide</code> + <code>help-json</code>. Complies with <a href="https://cli-specs.intrane.fr/">cli-specs</a>.</p></div>
+  <div class="card"><h3>One binary</h3><p>~240 KB native (<a href="https://github.com/javimosch/machin">MFL/machin</a>). No Docker, Postgres, or vector DB to boot.</p></div>
+  <div class="card"><h3>Self-hosted only</h3><p>MIT, feature-complete on your machine. No hosted cloud product — see <a href="https://github.com/javimosch/glane/blob/master/ROADMAP.md">ROADMAP</a>.</p></div>
+</div>
+
+<h2>Install</h2>
+<pre><code>curl -fsSL https://github.com/javimosch/glane/releases/latest/download/glane -o glane
+chmod +x glane && ./glane guide --human</code></pre>
+<p class="note">Linux x86_64. Or build from source with <a href="https://github.com/javimosch/machin">machin</a>: <code>./build.sh</code>.</p>
+
+<h2>The 60-second tour</h2>
+<pre><code><span class="k">glane</span> search "error handling" --limit 5
+<span class="k">glane</span> query neighbors doc:README.md --dir out
+<span class="k">glane</span> log --limit 5
+<span class="k">glane</span> diff
+<span class="k">glane</span> forget path/to/stale.md
+<span class="k">glane</span> embed --limit 10          <span class="comment"># optional, localhost only</span>
+<span class="k">glane</span> bench --docs 1000</code></pre>
+
+<h2>Links</h2>
+<ul>
+  <li><a href="https://github.com/javimosch/glane">Repository</a> · <a href="https://github.com/javimosch/glane/releases">Releases</a></li>
+  <li><a href="changelog.html">Changelog</a> · <a href="vs-cognee.md">vs Cognee</a> · <a href="llms.txt">llms.txt</a></li>
+  <li><a href="https://cli-specs.intrane.fr/">Agent-first CLI specs</a></li>
+</ul>
+
+<footer>
+  glane · MIT · self-hosted OSS · <a href="https://github.com/javimosch/glane">javimosch/glane</a>
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# glane
+
+Agent-first, graph-first knowledge / memory engine in one static native binary (MFL/machin). No UI. Self-hosted OSS only (MIT) — no hosted cloud product.
+
+- Repo: https://github.com/javimosch/glane
+- Manual: `glane guide` (JSON) or `glane guide --human`
+- Catalog: `glane help-json`
+- CLI contract: https://cli-specs.intrane.fr/ (stdout=JSON data, stderr=diagnostics, typed errors, exits 80–119)
+- Stack: https://github.com/javimosch/machin
+
+## Quickstart
+
+```
+glane init
+glane sync .
+glane search "error handling" --limit 5
+glane context "how does sync handle deletions?" --budget 2000 --mode lexical
+glane serve --port 7670
+```
+
+Composable: `glane scan . | glane chunk | glane extract | glane commit`
+
+## Concepts
+
+- Store dir: `.glane/` (like `.git`)
+- Truth: docs, chunks (content-addressed), nodes, edges, commits (generations)
+- Caches: BM25 postings, optional int8 vectors.jsonl
+- Extractors: deterministic markdown/code/JSON (source=parser + provenance); no LLM required
+- Killer verb: `context` = seed search → graph expand → token-budgeted pack + citations
+
+## Verbs
+
+init · scan · chunk · extract · commit · sync · embed · search · query · context · log · diff · forget · serve · status · bench · guide · help-json · version · feedback
+
+## HTTP (glane serve)
+
+GET /health · GET /status · POST /v1/search · POST /v1/context · POST /v1/query · POST /mcp
+
+MCP tools: glane_context · glane_search · glane_status · glane_query
+
+## Embeddings (optional, fragile localhost)
+
+GLANE_EMBED_URL default http://127.0.0.1:8095/v1/embeddings — localhost only, hard max 10 vectors per embed, sync never embeds. Dim: GLANE_EMBED_DIM (default 64).
+
+## Exit codes (selected)
+
+0 OK · 80 USAGE · 81 NO_STORE · 82 EXISTS · 83 BAD_INPUT · 84 IO · 85 NOT_FOUND · 86 NO_NODE · 87 NO_PATH · 88 EMBED · 89 NO_VECTORS · 90 FORGET_MISS
+
+## Scope
+
+Self-hosted only. No cloud remotes / multi-tenant hosted product in current roadmap.

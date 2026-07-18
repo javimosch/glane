@@ -25,16 +25,25 @@ glane serve --port 7670   # HTTP + MCP for agents
 
 ## Quickstart
 
-Needs [machin](https://github.com/javimosch/machin) to build:
+Site: [javimosch.github.io/glane](https://javimosch.github.io/glane/) · Changelog: [site](https://javimosch.github.io/glane/changelog.html) · [CHANGELOG.md](CHANGELOG.md)
+
+Linux x86_64 binary:
 
 ```sh
-git clone https://github.com/javimosch/glane.git
-cd glane && ./build.sh
+curl -fsSL https://github.com/javimosch/glane/releases/latest/download/glane -o glane
+chmod +x glane
 ./glane init
 ./glane sync .
 ./glane search "error handling" --limit 5
 ./glane context "explain the store layout" --budget 1500 --mode lexical
 ./glane guide --human
+```
+
+Or build from source (needs [machin](https://github.com/javimosch/machin)):
+
+```sh
+git clone https://github.com/javimosch/glane.git
+cd glane && ./build.sh
 ```
 
 Composable plumbing:
@@ -105,7 +114,7 @@ See [docs/vs-cognee.md](docs/vs-cognee.md). Headline: time-to-first-answer from 
 
 ## Project status
 
-OSS **self-hosted only** (MIT). Roadmap: [ROADMAP.md](ROADMAP.md). Changelog: [CHANGELOG.md](CHANGELOG.md). Agent brief: [llms.txt](llms.txt).
+OSS **self-hosted only** (MIT). Docs: [javimosch.github.io/glane](https://javimosch.github.io/glane/). Roadmap: [ROADMAP.md](ROADMAP.md). Changelog: [CHANGELOG.md](CHANGELOG.md) · [HTML](https://javimosch.github.io/glane/changelog.html). Agent brief: [llms.txt](llms.txt).
 
 ## Develop
 
