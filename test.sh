@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 ./build.sh
 export GLANE_BIN="$(pwd)/glane"
-LIBS="src/common.src src/scan.src src/chunk.src src/extract.src src/store.src src/bm25.src src/graph.src src/embed.src src/vector.src src/history.src src/context.src src/guide.src src/bench.src"
+LIBS="src/common.src src/scan.src src/chunk.src src/extract.src src/code_xtract.src src/parse_plugin.src src/store.src src/bm25.src src/graph.src src/embed.src src/vector.src src/history.src src/context.src src/eval.src src/guide.src src/bench.src"
 # note: serve.src + machweb are binary-only (HTTP); unit tests stay offline
 fail=0
 for t in tests/*_test.src; do

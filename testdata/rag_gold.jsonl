@@ -1,0 +1,50 @@
+{"q":"how does store_commit persist a generation","must_include":["src/store.src"],"via":"context"}
+{"q":"where is cmd_sync implemented","must_include":["src/main.src"],"via":"context"}
+{"q":"build_context token budget packing","must_include":["src/context.src"],"via":"context"}
+{"q":"bm25_search k1 b scoring","must_include":["src/bm25.src"],"via":"context"}
+{"q":"chunk_docs markdown heading split","must_include":["src/chunk.src"],"via":"context"}
+{"q":"extract_code_symbols defines edges","must_include":["src/extract.src"],"via":"context"}
+{"q":"extract_code_imports and extract_code_calls","must_include":["src/code_xtract.src"],"via":"context"}
+{"q":"glane-parse plugin protocol extract_chunk_plugin","must_include":["src/parse_plugin.src"],"via":"context"}
+{"q":"embed_chunks_capped localhost hard max","must_include":["src/embed.src"],"via":"context"}
+{"q":"semantic_search cosine_i8 hybrid_search RRF","must_include":["src/vector.src"],"via":"context"}
+{"q":"vec_gc_orphans on forget","must_include":["src/vector.src"],"via":"context"}
+{"q":"store_forget tombstone generation","must_include":["src/history.src"],"via":"context"}
+{"q":"cmd_log cmd_diff build_diff","must_include":["src/history.src"],"via":"context"}
+{"q":"run_rag_eval gold must_include accuracy","must_include":["src/eval.src"],"via":"context"}
+{"q":"scan_dir glaneignore find walk","must_include":["src/scan.src"],"via":"context"}
+{"q":"query neighbors path subgraph graph","must_include":["src/graph.src"],"via":"context"}
+{"q":"cmd_serve mcp tools glane_context","must_include":["src/serve.src"],"via":"context"}
+{"q":"help_catalog guide version feedback","must_include":["src/guide.src"],"via":"context"}
+{"q":"cmd_bench synthetic corpus cold_sync","must_include":["src/bench.src"],"via":"context"}
+{"q":"fail typed error GLANE_USAGE exits","must_include":["src/common.src"],"via":"context"}
+{"q":"path_boost citation ranking context seed","must_include":["src/context.src"],"via":"context"}
+{"q":"write_atomic store docs.jsonl chunks","must_include":["src/store.src"],"via":"context"}
+{"q":"tombstone_doc_graph gen_removed","must_include":["src/store.src"],"via":"context"}
+{"q":"rrf_add rrf_top hybrid_search reciprocal rank fusion","must_include":["src/vector.src"],"via":"context"}
+{"q":"EMBED_HARD_MAX ten vectors per run","must_include":["src/embed.src"],"via":"context"}
+{"q":"resolve_forget_selector GLANE_FORGET_MISS","must_include":["src/history.src"],"via":"context"}
+{"q":"ensure_edge provenance parser source","must_include":["src/extract.src"],"via":"context"}
+{"q":"is_markdown chunk_text window_bytes","must_include":["src/chunk.src"],"via":"context"}
+{"q":"collect_adj shortest_path live nodes","must_include":["src/graph.src"],"via":"context"}
+{"q":"POST /mcp tools/list tools/call","must_include":["src/serve.src"],"via":"context"}
+{"q":"self-hosted OSS only roadmap stance","must_include":["ROADMAP.md","README.md"],"via":"context"}
+{"q":"agent-first graph-first knowledge engine","must_include":["README.md"],"via":"context"}
+{"q":"vs Cognee time-to-first-answer docker","must_include":["docs/vs-cognee.md","README.md"],"via":"context"}
+{"q":"changelog 0.6.0 M5 launch polish","must_include":["CHANGELOG.md"],"via":"context"}
+{"q":"llms.txt agent brief glane context","must_include":["llms.txt","README.md"],"via":"context"}
+{"q":"cmd_eval gold jsonl accuracy_pct","must_include":["src/eval.src","src/main.src"],"via":"context"}
+{"q":"parse_plugins_enabled GLANE_PARSE_PLUGINS","must_include":["src/parse_plugin.src"],"via":"context"}
+{"q":"module imports edges kind module","must_include":["src/code_xtract.src"],"via":"context"}
+{"q":"doc_is_deleted live_vec_count filter","must_include":["src/store.src","src/vector.src"],"via":"context"}
+{"q":"context_seed auto hybrid lexical fallback","must_include":["src/context.src"],"via":"context"}
+{"q":"shell_quote write_atomic mv rename","must_include":["src/common.src","src/store.src"],"via":"context"}
+{"q":"json_arr quadratic workaround join","must_include":["src/common.src"],"via":"context"}
+{"q":"quantize_f32_i8 scale 127 embeddings","must_include":["src/embed.src","src/vector.src"],"via":"context"}
+{"q":"cmd_query neighbors path subgraph CLI","must_include":["src/main.src","src/graph.src"],"via":"context"}
+{"q":"ForgetStats vectors_gc after tombstone","must_include":["src/history.src"],"via":"context"}
+{"q":"extract_md_links refs relative markdown","must_include":["src/extract.src"],"via":"context"}
+{"q":"extract_json_keys top-level object","must_include":["src/extract.src"],"via":"context"}
+{"q":"bm25 postings rebuildable cache","must_include":["src/bm25.src"],"via":"context"}
+{"q":"scan binary NUL sniff always skipped","must_include":["src/scan.src"],"via":"context"}
+{"q":"M6 RAG quality eval pass threshold","must_include":["src/eval.src","ROADMAP.md"],"via":"context"}

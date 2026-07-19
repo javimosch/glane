@@ -62,8 +62,9 @@ func scan_dir(root) (docs, err) {
     err = 0
     q, qok := shell_quote(root)
     if qok == false { err = 85  return }
-    // one process for the whole walk; .git and .glane pruned at the source
-    code, out, _ := exec("find " + q + " '(' -name .git -o -name .glane ')' -prune -o -type f -printf '%P\\t%s\\t%T@\\n' 2>/dev/null")
+    // prune VCS / agent worktrees / store dirs at the source (dogfood: .claude
+    // worktrees otherwise duplicate hundreds of markdown files into the graph)
+    code, out, _ := exec("find " + q + " '(' -name .git -o -name .glane -o -name .claude -o -name node_modules -o -name vendor ')' -prune -o -type f -printf '%P\\t%s\\t%T@\\n' 2>/dev/null")
     if code != 0 { err = 85  return }
     pats := load_ignore(root)
     rels := []string{}

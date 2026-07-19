@@ -19,6 +19,7 @@ func help_catalog() (s) {
         "{\"name\":\"diff\",\"usage\":\"glane diff [<from> <to>]\",\"summary\":\"changes in generations (from, to]; default = last gen vs previous\"}," +
         "{\"name\":\"forget\",\"usage\":\"glane forget <path|doc:path|node-id>\",\"summary\":\"tombstone a live doc or node as a new generation (honest delete)\"}," +
         "{\"name\":\"context\",\"usage\":\"glane context <task> [--budget N] [--seeds K] [--depth D] [--mode auto|lexical|hybrid|semantic]\",\"summary\":\"token-budgeted context pack: seed search + graph expand + citations (the agent pre-work verb)\"}," +
+        "{\"name\":\"eval\",\"usage\":\"glane eval [--gold path] [--budget N] [--seeds K] [--depth D] [--mode lexical|hybrid|auto]\",\"summary\":\"RAG accuracy vs gold JSONL (Q -> must_include paths); pass if accuracy_pct >= 98\"}," +
         "{\"name\":\"serve\",\"usage\":\"glane serve [--port 7670]\",\"summary\":\"sequential HTTP+MCP server (GET /health|/status, POST /v1/search|/v1/context|/v1/query|/mcp)\"}," +
         "{\"name\":\"status\",\"usage\":\"glane status\",\"summary\":\"store stats JSON (gen, docs, chunks, nodes, edges, vectors, bytes)\"}," +
         "{\"name\":\"bench\",\"usage\":\"glane bench [--docs 1000]\",\"summary\":\"self-benchmark on a synthetic corpus -> one JSON report (sequential, modest RSS; no embed)\"}," +
@@ -35,15 +36,17 @@ func cmd_help_json() {
 
 func cmd_guide(human) {
     if human {
-        println("glane " + glane_version + " -- agent-first knowledge engine (M5: self-hosted OSS)")
+        println("glane " + glane_version + " -- agent-first knowledge engine (M6: RAG quality)")
         println("")
         println("Store: .glane/ — graph is source of truth; BM25 + vectors.jsonl are rebuildable caches.")
         println("Killer verb:  glane context \"task\" --budget 2000")
+        println("RAG eval:     glane eval --gold testdata/rag_gold.jsonl")
         println("Serve:        glane serve --port 7670   # HTTP + POST /mcp tools")
         println("Stance:       OSS self-hosted only — no hosted cloud product.")
         println("")
         println("Pipeline:  glane init && glane sync <path>")
         println("           glane context \"how does sync work\" --budget 1500")
+        println("           glane eval --gold testdata/rag_gold.jsonl")
         println("           glane serve --port 7670")
         println("")
         println("Docs: README.md · llms.txt · ROADMAP.md · docs/vs-cognee.md")
@@ -83,12 +86,12 @@ func cmd_guide(human) {
         "\"exit_codes\":" + ec + "," +
         "\"store\":" + st + "," +
         "\"chunking\":{\"markdown\":\"split on heading lines\",\"window_bytes\":2000,\"boundary\":\"last newline in window\",\"id\":\"sha256(chunk text)\"}," +
-        "\"extract\":{\"source\":\"parser\",\"kinds\":[\"doc\",\"chunk\",\"heading\",\"link\",\"symbol\",\"jsonkey\"],\"rels\":[\"has_chunk\",\"has_heading\",\"links_to\",\"refs\",\"defines\",\"has_key\"]}," +
+        "\"extract\":{\"source\":\"parser|plugin:glane-parse-<ext>\",\"kinds\":[\"doc\",\"chunk\",\"heading\",\"link\",\"symbol\",\"module\",\"jsonkey\"],\"rels\":[\"has_chunk\",\"has_heading\",\"links_to\",\"refs\",\"defines\",\"imports\",\"calls\",\"has_key\"]}," +
         "\"embed\":{\"url_env\":\"GLANE_EMBED_URL\",\"default_url\":\"http://127.0.0.1:8095/v1/embeddings\",\"dim_env\":\"GLANE_EMBED_DIM\",\"default_dim\":64,\"maxchars_env\":\"GLANE_EMBED_MAXCHARS\",\"default_maxchars\":256,\"hard_max\":10,\"host\":\"localhost/127.0.0.1 only\",\"quant\":\"int8 scale 127\",\"batch\":\"one HTTP call per chunk\",\"sync_embeds\":false}," +
         "\"search\":{\"modes\":[\"lexical\",\"semantic\",\"hybrid\"],\"lexical\":\"BM25 k1=1.2 b=0.75\",\"semantic\":\"int8 cosine brute-force\",\"hybrid\":\"reciprocal rank fusion k=60\"}," +
         "\"context\":{\"seed\":\"search\",\"expand\":\"graph neighbors + provenance\",\"budget\":\"token estimate chars/4\",\"default_mode\":\"auto (hybrid if vectors else lexical)\"}," +
         "\"serve\":{\"default_port\":7670,\"model\":\"sequential single-actor\",\"http\":[\"GET /health\",\"GET /status\",\"POST /v1/search\",\"POST /v1/context\",\"POST /v1/query\"],\"mcp\":\"POST /mcp (initialize, tools/list, tools/call)\"}," +
-        "\"ignore\":{\"file\":\".glaneignore\",\"rules\":[\"*.ext suffix\",\"dir/ prefix\",\"name exact|basename|prefix\",\"# comment\"],\"always_skipped\":[\".git\",\".glane\",\"binary extensions\",\"NUL-sniffed files\"]}," +
+        "\"ignore\":{\"file\":\".glaneignore\",\"rules\":[\"*.ext suffix\",\"dir/ prefix\",\"name exact|basename|prefix\",\"# comment\"],\"always_skipped\":[\".git\",\".glane\",\".claude\",\"node_modules\",\"vendor\",\"binary extensions\",\"NUL-sniffed files\"]}," +
         "\"commands\":" + help_catalog() + "," +
         "\"examples\":" + ex + "}")
 }

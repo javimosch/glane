@@ -1,0 +1,33 @@
+// RAG eval harness: path matching + gold coverage on a tiny store.
+
+func main() {
+    assert(path_match_one("src/store.src", "src/store.src"), "exact match")
+    assert(path_match_one("src/store.src", "store.src"), "basename match")
+    assert(path_match_one("/tmp/x/src/store.src", "src/store.src"), "suffix match")
+
+    tmp := "/tmp/glane-eval-test-" + str(now_ms())
+    mkdir(tmp)
+    mkdir(tmp + "/src")
+    write_file(tmp + "/src/store.src", "func store_commit(docs, chunks) {\n    // persist generation\n    return\n}\n")
+    write_file(tmp + "/src/context.src", "func build_context(task, budget) {\n    // token budget pack\n    return\n}\n")
+    write_file(tmp + "/gold.jsonl", "{\"q\":\"store_commit persist generation\",\"must_include\":[\"src/store.src\"],\"via\":\"context\"}\n{\"q\":\"build_context token budget\",\"must_include\":[\"src/context.src\"],\"via\":\"context\"}\n")
+
+    store_reset(tmp + "/.glane")
+    assert_eq_int(store_init(), 0, "init")
+    docs, _ := scan_dir(tmp)
+    // only src docs under tmp — paths will be relative to scan root
+    cs := chunk_docs(docs)
+    nodes, edges := extract_chunks(cs.chunks)
+    _, cerr := store_commit(docs, cs.chunks, nodes, edges, "sync")
+    assert_eq_int(cerr, 0, "commit")
+
+    cases, gerr := load_gold_jsonl(tmp + "/gold.jsonl")
+    assert_eq_int(gerr, 0, "gold load")
+    assert_eq_int(len(cases), 2, "two cases")
+    rep := run_rag_eval(cases, 2000, 8, 2, "lexical")
+    assert(rep.n == 2, "n=2")
+    assert(rep.hits >= 1, "at least one hit on distinctive terms")
+
+    _, _, _ := exec("rm -rf " + tmp)
+    test_summary()
+}

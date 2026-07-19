@@ -1,0 +1,107 @@
+// glane — RAG accuracy eval: gold Q → must_include citation paths.
+// Metric: hit if any pack citation.doc matches a must_include path
+// (exact, suffix, or basename). Target for the quality loop: >= 98%.
+
+type GoldCase struct { q string  must_include []string  via string }
+type EvalMiss struct { q string  want []string  got []string }
+type EvalReport struct {
+    n int
+    hits int
+    accuracy float
+    accuracy_pct float
+    mode string
+    budget int
+    seeds int
+    depth int
+    misses []EvalMiss
+}
+
+func path_match_one(got, want) (yes) {
+    yes = false
+    if got == "" || want == "" { return }
+    if got == want { yes = true  return }
+    if has_suffix(got, "/" + want) { yes = true  return }
+    if has_suffix(want, "/" + got) { yes = true  return }
+    if basename(got) == basename(want) && basename(want) != "" { yes = true  return }
+}
+
+func cites_cover(cites, must) (yes) {
+    yes = false
+    for _, w := range must {
+        for _, c := range cites {
+            if path_match_one(c.doc, w) { yes = true  return }
+        }
+    }
+}
+
+func load_gold_jsonl(path) (cases, err) {
+    cases = []GoldCase{}
+    err = 0
+    raw := read_file(path)
+    if raw == "" { err = 85  return }
+    for _, ln := range split(raw, "\n") {
+        t := trim(ln)
+        if t == "" || has_prefix(t, "#") { continue }
+        if has_prefix(t, "{") == false { continue }
+        g := parse(t, GoldCase{})
+        if trim(g.q) == "" || len(g.must_include) == 0 { continue }
+        if g.via == "" { g.via = "context" }
+        cases = append(cases, g)
+    }
+    if len(cases) == 0 { err = 83 }
+}
+
+func run_rag_eval(cases, budget, seeds, depth, mode) (rep) {
+    rep = EvalReport{n: len(cases), hits: 0, accuracy: 0.0, accuracy_pct: 0.0, mode: mode, budget: budget, seeds: seeds, depth: depth, misses: []EvalMiss{}}
+    for _, g := range cases {
+        pack, err := build_context(g.q, budget, seeds, depth, mode)
+        if err != 0 {
+            rep.misses = append(rep.misses, EvalMiss{q: g.q, want: g.must_include, got: []string{}})
+            continue
+        }
+        if cites_cover(pack.citations, g.must_include) {
+            rep.hits = rep.hits + 1
+        } else {
+            got := []string{}
+            for _, c := range pack.citations { got = append(got, c.doc) }
+            rep.misses = append(rep.misses, EvalMiss{q: g.q, want: g.must_include, got: got})
+        }
+    }
+    if rep.n > 0 {
+        rep.accuracy = float(rep.hits) / float(rep.n)
+        rep.accuracy_pct = rep.accuracy * 100.0
+    }
+}
+
+func eval_json(rep) (s) {
+    mparts := []string{}
+    for _, m := range rep.misses {
+        mparts = append(mparts, "{\"q\":" + json(m.q) + ",\"want\":" + str_arr_json(m.want) + ",\"got\":" + str_arr_json(m.got) + "}")
+    }
+    pass := "false"
+    if rep.accuracy_pct >= 98.0 { pass = "true" }
+    // integer percent (basis: hits*10000/n → two decimals as string via json float fields)
+    pct_x100 := 0
+    if rep.n > 0 { pct_x100 = (rep.hits * 10000) / rep.n }
+    s = "{\"n\":" + str(rep.n) + ",\"hits\":" + str(rep.hits) +
+        ",\"accuracy\":" + json(rep.accuracy) + ",\"accuracy_pct\":" + json(rep.accuracy_pct) +
+        ",\"accuracy_bp\":" + str(pct_x100) +
+        ",\"mode\":" + json(rep.mode) + ",\"budget\":" + str(rep.budget) + ",\"seeds\":" + str(rep.seeds) + ",\"depth\":" + str(rep.depth) +
+        ",\"misses\":" + json_arr(mparts) + ",\"pass\":" + pass + "}"
+}
+
+func cmd_eval(gold_path, budget, seeds, depth, mode) {
+    lerr := store_load()
+    if lerr != 0 { fail(81, "GLANE_NO_STORE", "no .glane store here; run `glane init` first", true, []string{"glane init"}) }
+    if gold_path == "" { gold_path = "testdata/rag_gold.jsonl" }
+    cases, gerr := load_gold_jsonl(gold_path)
+    if gerr == 85 { fail(85, "GLANE_NOT_FOUND", "gold file not found: " + gold_path, true, []string{"glane eval --gold testdata/rag_gold.jsonl"}) }
+    if gerr == 83 { fail(83, "GLANE_BAD_INPUT", "gold file has no usable cases", true, []string{}) }
+    if budget < 64 { budget = 2000 }
+    if seeds < 1 { seeds = 12 }
+    if depth < 0 { depth = 2 }
+    if mode == "" { mode = "lexical" }
+    progress("eval: " + str(len(cases)) + " gold cases, mode=" + mode)
+    rep := run_rag_eval(cases, budget, seeds, depth, mode)
+    println(eval_json(rep))
+}

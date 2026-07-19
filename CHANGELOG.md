@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — M6 RAG quality
+
+- Richer code extractors: `imports` / `calls` + `module` nodes (`code_xtract.src`)
+- Optional `glane-parse-<ext>` plugin protocol (`parse_plugin.src`)
+- `glane eval` — gold JSONL RAG accuracy (hit if citations cover `must_include`; pass ≥ 98%)
+- Context ranking: path-boost, content-token query, term-coverage (dogfood on machin docs)
+- Embed: small batches + retry; `GLANE_EMBED_HARD_MAX` / `GLANE_EMBED_BATCH` for dogfood
+- Scan prunes `.claude` / `node_modules` / `vendor` (worktree flood)
+- Vector GC on `forget` (`vec_gc_orphans`)
+- Gold fixture: `testdata/rag_gold.jsonl`
+
 ## 0.6.0 — M5 launch polish
 
 - README, `llms.txt`, `docs/vs-cognee.md`, `ROADMAP.md`, MIT `LICENSE`

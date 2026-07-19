@@ -1,0 +1,99 @@
+// glane — optional glane-parse-<ext> plugin protocol.
+// After built-ins, if `command -v glane-parse-<ext>` finds a binary, pipe one
+// chunk JSON on stdin and merge returned nodes/edges. Failures are non-fatal.
+// Disable: GLANE_PARSE_PLUGINS=0
+
+type PluginNode struct { id string  kind string  name string  attrs string }
+type PluginEdge struct { src string  rel string  dst string }
+type PluginOut struct { nodes []PluginNode  edges []PluginEdge }
+
+func parse_plugins_enabled() (yes) {
+    yes = true
+    v := env("GLANE_PARSE_PLUGINS")
+    if v == "0" || v == "false" || v == "off" { yes = false }
+}
+
+func path_ext_tag(path) (tag) {
+    tag = ""
+    lp := to_lower(path)
+    // last suffix after final '.'
+    i := len(lp) - 1
+    while i >= 0 {
+        if charat(lp, i) == "/" { return }
+        if charat(lp, i) == "." {
+            tag = substr(lp, i + 1, len(lp))
+            return
+        }
+        i = i - 1
+    }
+}
+
+func plugin_bin_for(path) (bin, ok) {
+    ok = false
+    bin = ""
+    tag := path_ext_tag(path)
+    if tag == "" { return }
+    // normalize: .src → src, etc.
+    name := "glane-parse-" + tag
+    code, out, _ := exec("command -v " + name + " 2>/dev/null")
+    if code != 0 { return }
+    bin = trim(out)
+    if bin == "" { return }
+    ok = true
+}
+
+// ensure_edge_src is ensure_edge with an explicit source label.
+func ensure_edge_src(edges, seen, src, rel, dst, chunk, source) (out) {
+    out = edges
+    eid := edge_id(src, rel, dst)
+    if has(seen, eid) { return }
+    seen[eid] = 1
+    prov := []string{}
+    prov = append(prov, chunk)
+    out = append(out, Edge{id: eid, src: src, rel: rel, dst: dst, weight: 1.0, source: source, provenance: prov, gen_added: 0, gen_removed: 0})
+}
+
+// extract_chunk_plugin merges optional external parser output for one chunk.
+func extract_chunk_plugin(c, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    if parse_plugins_enabled() == false { return }
+    bin, ok := plugin_bin_for(c.doc)
+    if ok == false { return }
+    payload := "{\"doc\":" + json(c.doc) + ",\"chunk\":" + json(c.id) + ",\"text\":" + json(c.text) + ",\"lang\":" + json(path_ext_tag(c.doc)) + "}"
+    tmp := "/tmp/glane-parse-" + substr(c.id, 0, 12) + ".json"
+    write_file(tmp, payload)
+    qtmp, qok := shell_quote(tmp)
+    if qok == false {
+        _, _, _ := exec("rm -f " + tmp)
+        return
+    }
+    qbin, bok := shell_quote(bin)
+    if bok == false {
+        _, _, _ := exec("rm -f " + tmp)
+        return
+    }
+    code, out, err := exec(qbin + " < " + qtmp)
+    _, _, _ := exec("rm -f " + tmp)
+    if code != 0 {
+        progress("parse-plugin: " + bin + " exit " + str(code) + " (ignored)")
+        return
+    }
+    raw := trim(out)
+    if raw == "" || has_prefix(raw, "{") == false {
+        if trim(err) != "" { progress("parse-plugin: bad stdout from " + bin) }
+        return
+    }
+    po := parse(raw, PluginOut{})
+    src_label := "plugin:" + basename(bin)
+    for _, pn := range po.nodes {
+        if pn.id == "" || pn.kind == "" { continue }
+        attrs := pn.attrs
+        if attrs == "" { attrs = "{}" }
+        nout = ensure_node(nout, nseen, Node{id: pn.id, kind: pn.kind, name: pn.name, attrs: attrs, gen_added: 0, gen_removed: 0})
+    }
+    for _, pe := range po.edges {
+        if pe.src == "" || pe.rel == "" || pe.dst == "" { continue }
+        eout = ensure_edge_src(eout, eseen, pe.src, pe.rel, pe.dst, c.id, src_label)
+    }
+}

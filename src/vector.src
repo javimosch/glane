@@ -1,5 +1,5 @@
-// glane — vector: int8 cache search + hybrid RRF with BM25.
-// Vectors are a rebuildable cache (rm vectors.jsonl loses nothing of truth).
+// glane — vector: int8 cache search + hybrid reciprocal rank fusion (RRF) with BM25.
+// RRF uses k=60. Vectors are a rebuildable cache (rm vectors.jsonl loses nothing of truth).
 
 type VecRec struct { id string  dim int  q []int }
 
@@ -161,6 +161,34 @@ func hybrid_search(query, limit) (hits, err) {
     order = rrf_add(lex, scores, meta, order)
     order = rrf_add(sem, scores, meta, order)
     hits = rrf_top(scores, meta, order, limit)
+}
+
+// vec_gc_orphans rewrites vectors.jsonl without rows whose chunk doc is deleted
+// (or chunk missing). Cache-only; graph truth is untouched.
+func vec_gc_orphans() (removed) {
+    removed = 0
+    if len(st_vecs) == 0 { return }
+    keep := []VecRec{}
+    for _, v := range st_vecs {
+        drop := false
+        if has(st_chunk_map, v.id) == false {
+            drop = true
+        } else {
+            c := st_chunks[st_chunk_map[v.id]]
+            if doc_is_deleted(c.doc) { drop = true }
+        }
+        if drop { removed = removed + 1 } else { keep = append(keep, v) }
+    }
+    if removed == 0 { return }
+    lines := ""
+    st_vecs = []VecRec{}
+    st_vec_map = make(map[string]int)
+    for _, v2 := range keep {
+        apply_vec_row(v2)
+        lines = lines + json(v2) + "\n"
+    }
+    write_atomic(st_dir + "/vectors.jsonl", lines)
+    progress("vec-gc: removed " + str(removed) + " orphan vectors")
 }
 
 // search_dispatch runs lexical | semantic | hybrid.

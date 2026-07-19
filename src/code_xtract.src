@@ -1,0 +1,150 @@
+// glane — richer deterministic code extractors: imports + calls.
+// Companion to extract.src (keeps that file under the ~500 LOC cap).
+
+// ident_at reads a C-like identifier starting at pos; returns name + end index.
+func ident_at(s, pos) (name, end) {
+    name = ""
+    end = pos
+    n := len(s)
+    if pos >= n { return }
+    c0 := charat(s, pos)
+    ok0 := (c0 >= "a" && c0 <= "z") || (c0 >= "A" && c0 <= "Z") || c0 == "_"
+    if ok0 == false { return }
+    i := pos
+    while i < n {
+        c := charat(s, i)
+        okc := (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_"
+        if okc == false { break }
+        name = name + c
+        i = i + 1
+    }
+    end = i
+}
+
+func is_call_kw(name) (yes) {
+    yes = name == "if" || name == "for" || name == "while" || name == "switch" || name == "return" || name == "func" || name == "def" || name == "class" || name == "type" || name == "struct" || name == "fn" || name == "import" || name == "from" || name == "package" || name == "var" || name == "let" || name == "const" || name == "new" || name == "typeof" || name == "sizeof" || name == "match" || name == "select" || name == "case" || name == "else" || name == "elif" || name == "with" || name == "as" || name == "in" || name == "print" || name == "assert"
+}
+
+// extract_code_imports finds import/require/include/use lines → module nodes + imports edges.
+func extract_code_imports(line, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    t := trim(line)
+    if t == "" { return }
+    mod := ""
+    if has_prefix(t, "import ") {
+        rest := trim(substr(t, 7, len(t)))
+        // go: import "pkg"  | import (  — skip paren form on this line
+        if has_prefix(rest, "\"") {
+            rest = substr(rest, 1, len(rest))
+            q := index(rest, "\"")
+            if q > 0 { mod = substr(rest, 0, q) }
+        } else if has_prefix(rest, "'") {
+            rest = substr(rest, 1, len(rest))
+            q2 := index(rest, "'")
+            if q2 > 0 { mod = substr(rest, 0, q2) }
+        } else if has_prefix(rest, "(") == false {
+            // bare: import foo / import foo as bar
+            name, _ := ident_at(rest, 0)
+            mod = name
+        }
+    }
+    if has_prefix(t, "from ") {
+        // python: from pkg import x
+        rest2 := trim(substr(t, 5, len(t)))
+        name2, end2 := ident_at(rest2, 0)
+        if name2 != "" {
+            // allow dotted: pkg.sub
+            i := end2
+            while i < len(rest2) && charat(rest2, i) == "." {
+                i = i + 1
+                n3, e3 := ident_at(rest2, i)
+                if n3 == "" { break }
+                name2 = name2 + "." + n3
+                i = e3
+            }
+            mod = name2
+        }
+    }
+    if has_prefix(t, "require(") || has_prefix(t, "require (") {
+        lb := index(t, "(")
+        if lb >= 0 {
+            rest3 := trim(substr(t, lb + 1, len(t)))
+            if has_prefix(rest3, "\"") || has_prefix(rest3, "'") {
+                qch := charat(rest3, 0)
+                rest3 = substr(rest3, 1, len(rest3))
+                qe := index(rest3, qch)
+                if qe > 0 { mod = substr(rest3, 0, qe) }
+            }
+        }
+    }
+    if has_prefix(t, "#include ") {
+        rest4 := trim(substr(t, 9, len(t)))
+        if has_prefix(rest4, "<") || has_prefix(rest4, "\"") {
+            open := charat(rest4, 0)
+            close := ">"
+            if open == "\"" { close = "\"" }
+            rest4 = substr(rest4, 1, len(rest4))
+            q4 := index(rest4, close)
+            if q4 > 0 { mod = substr(rest4, 0, q4) }
+        }
+    }
+    if has_prefix(t, "use ") {
+        rest5 := trim(substr(t, 4, len(t)))
+        // rust: use foo::bar;
+        name5, end5 := ident_at(rest5, 0)
+        if name5 != "" {
+            mod = name5
+            i5 := end5
+            while i5 < len(rest5) && (charat(rest5, i5) == ":" || charat(rest5, i5) == "/") {
+                // skip ::
+                while i5 < len(rest5) && (charat(rest5, i5) == ":" || charat(rest5, i5) == "/") { i5 = i5 + 1 }
+                n6, e6 := ident_at(rest5, i5)
+                if n6 == "" { break }
+                mod = mod + "::" + n6
+                i5 = e6
+            }
+        }
+    }
+    if mod == "" { return }
+    nid := "module:" + mod
+    nout = ensure_node(nout, nseen, Node{id: nid, kind: "module", name: mod, attrs: "{\"via\":" + json(doc_id) + "}", gen_added: 0, gen_removed: 0})
+    eout = ensure_edge(eout, eseen, doc_id, "imports", nid, chunk)
+}
+
+// extract_code_calls finds name( patterns on a line → calls edges to symbol:name.
+func extract_code_calls(line, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout = nodes
+    eout = edges
+    t := line
+    // skip definition lines (already handled as defines)
+    tt := trim(t)
+    if has_prefix(tt, "func ") || has_prefix(tt, "def ") || has_prefix(tt, "fn ") || has_prefix(tt, "class ") || has_prefix(tt, "type ") || has_prefix(tt, "struct ") { return }
+    i := 0
+    n := len(t)
+    while i < n {
+        name, end := ident_at(t, i)
+        if name == "" { i = i + 1  continue }
+        // skip dotted receiver: foo.bar( — take bar
+        if end < n && charat(t, end) == "." {
+            i = end + 1
+            continue
+        }
+        j := end
+        while j < n && (charat(t, j) == " " || charat(t, j) == "\t") { j = j + 1 }
+        if j < n && charat(t, j) == "(" && is_call_kw(name) == false {
+            nid := "symbol:" + name
+            nout = ensure_node(nout, nseen, Node{id: nid, kind: "symbol", name: name, attrs: "{\"role\":\"call\"}", gen_added: 0, gen_removed: 0})
+            eout = ensure_edge(eout, eseen, doc_id, "calls", nid, chunk)
+        }
+        i = end
+        if i == 0 { i = 1 }
+    }
+}
+
+// extract_code_rich runs symbols + imports + calls for one code line.
+func extract_code_rich(line, chunk, doc_id, nodes, edges, nseen, eseen) (nout, eout) {
+    nout, eout = extract_code_symbols(line, chunk, doc_id, nodes, edges, nseen, eseen)
+    nout, eout = extract_code_imports(line, chunk, doc_id, nout, eout, nseen, eseen)
+    nout, eout = extract_code_calls(line, chunk, doc_id, nout, eout, nseen, eseen)
+}

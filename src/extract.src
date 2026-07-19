@@ -224,13 +224,15 @@ func extract_chunk(c, nodes, edges, nseen, eseen) (nout, eout) {
         pos2 := 0
         while pos2 < len(c.text) {
             line2, next2 := line_at(c.text, pos2)
-            nout, eout = extract_code_symbols(line2, c.id, doc_id, nout, eout, nseen, eseen)
+            nout, eout = extract_code_rich(line2, c.id, doc_id, nout, eout, nseen, eseen)
             pos2 = next2
         }
     }
     if is_json_path(c.doc) {
         nout, eout = extract_json_keys(c.text, c.id, doc_id, nout, eout, nseen, eseen)
     }
+    // optional external glane-parse-<ext> (non-fatal)
+    nout, eout = extract_chunk_plugin(c, nout, eout, nseen, eseen)
 }
 
 // extract_chunks runs extractors over a chunk list → nodes + edges (sorted ids).

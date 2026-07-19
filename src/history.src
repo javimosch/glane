@@ -138,12 +138,12 @@ func cmd_diff(from, to) {
     println(diff_json(rep))
 }
 
-type ForgetStats struct { gen int  forgotten string  kind string  docs_deleted int  nodes_removed int  edges_removed int }
+type ForgetStats struct { gen int  forgotten string  kind string  docs_deleted int  nodes_removed int  edges_removed int  vectors_gc int }
 
 // store_forget tombstones a doc path or node id as a new generation (op=forget).
 func store_forget(kind, key) (stats, err) {
     err = store_load()
-    stats = ForgetStats{gen: 0, forgotten: key, kind: kind, docs_deleted: 0, nodes_removed: 0, edges_removed: 0}
+    stats = ForgetStats{gen: 0, forgotten: key, kind: kind, docs_deleted: 0, nodes_removed: 0, edges_removed: 0, vectors_gc: 0}
     if err != 0 { return }
     gen := st_gen + 1
     dlines := ""
@@ -211,6 +211,8 @@ func store_forget(kind, key) (stats, err) {
     rec := CommitRec{gen: st_gen, ts: now(), op: "forget", docs_seen: 0, docs_changed: 0, docs_deleted: stats.docs_deleted, chunks_new: 0, chunks_total: len(st_chunks), nodes_new: 0, edges_new: 0}
     st_commits = append(st_commits, rec)
     append_lines(st_dir + "/commits.jsonl", json(rec) + "\n")
+    // drop vector cache rows for forgotten docs (rebuildable)
+    stats.vectors_gc = vec_gc_orphans()
     stats.gen = st_gen
 }
 
@@ -227,7 +229,7 @@ func resolve_forget_selector(sel) (kind, key, err) {
         return
     }
     // known node id prefixes → node forget
-    if has_prefix(sel, "symbol:") || has_prefix(sel, "heading:") || has_prefix(sel, "link:") || has_prefix(sel, "chunk:") || has_prefix(sel, "jsonkey:") {
+    if has_prefix(sel, "symbol:") || has_prefix(sel, "heading:") || has_prefix(sel, "link:") || has_prefix(sel, "chunk:") || has_prefix(sel, "jsonkey:") || has_prefix(sel, "module:") {
         kind = "node"
         key = sel
         return

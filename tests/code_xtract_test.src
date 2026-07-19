@@ -1,0 +1,23 @@
+// richer code extractors: imports + calls.
+
+func main() {
+    code := "import \"fmt\"\nfrom os import path\nrequire(\"fs\")\n#include <stdio.h>\nuse std::io;\n\nfunc run() {\n    store_commit(docs, chunks)\n    helper()\n}\n"
+    cc := []Chunk{}
+    cc = append(cc, Chunk{id: sha256(code), doc: "demo.src", ord: 0, start: 0, end: len(code), text: code})
+    nodes, edges := extract_chunks(cc)
+
+    mods := 0
+    for _, n := range nodes { if n.kind == "module" { mods = mods + 1 } }
+    assert(mods >= 3, "module nodes from imports (got " + str(mods) + ")")
+
+    imps := 0
+    calls := 0
+    for _, e := range edges {
+        if e.rel == "imports" { imps = imps + 1 }
+        if e.rel == "calls" { calls = calls + 1 }
+    }
+    assert(imps >= 3, "imports edges (got " + str(imps) + ")")
+    assert(calls >= 1, "calls edges (got " + str(calls) + ")")
+
+    test_summary()
+}

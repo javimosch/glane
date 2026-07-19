@@ -84,7 +84,7 @@ func usage_fail(msg) {
 
 func main() {
     a := args()
-    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|context|log|diff|forget|serve|status|bench|guide|help-json|version|feedback>") }
+    if len(a) < 2 { usage_fail("usage: glane <init|scan|chunk|extract|commit|sync|embed|search|query|context|eval|log|diff|forget|serve|status|bench|guide|help-json|version|feedback>") }
     cmd := a[1]
     if cmd == "version" { cmd_version()  return }
     if cmd == "help-json" { cmd_help_json()  return }
@@ -252,6 +252,49 @@ func main() {
             usage_fail("usage: glane serve [--port N]")
         }
         cmd_serve(port)
+        return
+    }
+    if cmd == "eval" {
+        gold := "testdata/rag_gold.jsonl"
+        budget := 2000
+        seeds := 12
+        depth := 2
+        mode := "lexical"
+        i6 := 2
+        while i6 < len(a) {
+            if a[i6] == "--gold" {
+                if i6 + 1 >= len(a) { usage_fail("--gold needs a path") }
+                gold = a[i6 + 1]
+                i6 = i6 + 2
+                continue
+            }
+            if a[i6] == "--budget" {
+                if i6 + 1 >= len(a) { usage_fail("--budget needs a number") }
+                budget = parse_int(a[i6 + 1])
+                i6 = i6 + 2
+                continue
+            }
+            if a[i6] == "--seeds" {
+                if i6 + 1 >= len(a) { usage_fail("--seeds needs a number") }
+                seeds = parse_int(a[i6 + 1])
+                i6 = i6 + 2
+                continue
+            }
+            if a[i6] == "--depth" {
+                if i6 + 1 >= len(a) { usage_fail("--depth needs a number") }
+                depth = parse_int(a[i6 + 1])
+                i6 = i6 + 2
+                continue
+            }
+            if a[i6] == "--mode" {
+                if i6 + 1 >= len(a) { usage_fail("--mode needs lexical|hybrid|semantic|auto") }
+                mode = a[i6 + 1]
+                i6 = i6 + 2
+                continue
+            }
+            usage_fail("usage: glane eval [--gold path] [--budget N] [--seeds K] [--depth D] [--mode lexical|hybrid|auto]")
+        }
+        cmd_eval(gold, budget, seeds, depth, mode)
         return
     }
     if cmd == "bench" {

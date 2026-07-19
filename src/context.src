@@ -20,6 +20,76 @@ func est_tokens(s) (n) {
     if n < 1 && len(s) > 0 { n = 1 }
 }
 
+// content_token: skip English stopwords / tiny words so "how do I use X"
+// does not boost every prose chunk equally (dogfood gap on machin docs).
+func content_token(tok) (yes) {
+    yes = false
+    if len(tok) < 4 { return }
+    if tok == "what" || tok == "when" || tok == "where" || tok == "which" || tok == "with" || tok == "this" || tok == "that" || tok == "from" || tok == "have" || tok == "does" || tok == "into" || tok == "about" || tok == "should" || tok == "would" || tok == "could" || tok == "their" || tok == "there" || tok == "these" || tok == "those" || tok == "your" || tok == "more" || tok == "than" || tok == "then" || tok == "them" || tok == "been" || tok == "were" || tok == "will" || tok == "just" || tok == "like" || tok == "also" || tok == "only" || tok == "over" || tok == "such" || tok == "some" || tok == "very" || tok == "into" || tok == "how" || tok == "use" || tok == "using" || tok == "used" || tok == "make" || tok == "made" || tok == "work" || tok == "works" || tok == "working" || tok == "get" || tok == "got" || tok == "set" || tok == "run" || tok == "running" || tok == "need" || tok == "needs" || tok == "want" || tok == "know" || tok == "name" || tok == "file" || tok == "files" || tok == "code" || tok == "function" { return }
+    yes = true
+}
+
+// path_boost raises chunks whose doc path/basename overlaps query tokens.
+// Critical for RAG: "how does sync work" should prefer src/main.src over noise.
+func path_boost(doc, task) (b) {
+    b = 0.0
+    if doc == "" || task == "" { return }
+    dl := to_lower(doc)
+    base := to_lower(basename(doc))
+    for _, tok := range tokenize(task) {
+        if content_token(tok) == false { continue }
+        tl := to_lower(tok)
+        // prefer basename / file stem over parent-dir matches (skills/machin-*)
+        if contains(base, tl) { b = b + 5.0 }
+        if has_suffix(base, tl + ".src") || has_suffix(base, tl + ".md") { b = b + 3.0 }
+        // weaker: directory segment match
+        if contains(dl, "/" + tl) || contains(dl, tl + "/") || contains(dl, tl + "-") || contains(dl, "-" + tl) { b = b + 1.0 }
+    }
+}
+
+// term_coverage: content-token overlap. Partial matches of short queries
+// are penalized — dogfood "machin encode" must not prefer skills/machin-*
+// that only match the path token "machin" and miss "encode".
+func term_coverage(text, task) (b) {
+    b = 0.0
+    if text == "" || task == "" { return }
+    tl := to_lower(text)
+    hit := 0
+    n := 0
+    for _, tok := range tokenize(task) {
+        if content_token(tok) == false { continue }
+        n = n + 1
+        if contains(tl, to_lower(tok)) { hit = hit + 1 }
+    }
+    if n == 0 { return }
+    // hard-require long tokens (len>=6): "encode", "selfhost", "performance"
+    // shorter ones ("notes") are soft — avoid over-demoting real hits
+    miss_long := 0
+    for _, tok2 := range tokenize(task) {
+        if content_token(tok2) == false { continue }
+        if len(tok2) < 6 { continue }
+        if contains(tl, to_lower(tok2)) == false { miss_long = miss_long + 1 }
+    }
+    if miss_long > 0 {
+        b = 0.0 - float(miss_long) * 10.0
+        return
+    }
+    b = (float(hit) / float(n)) * 6.0
+    if hit == n { b = b + 4.0 }
+}
+
+// content_query keeps distinctive tokens so BM25 is not flooded by
+// "how do I use …" stopword matches (dogfood gap on natural-language Qs).
+func content_query(task) (q) {
+    q = ""
+    parts := []string{}
+    for _, tok := range tokenize(task) {
+        if content_token(tok) { parts = append(parts, tok) }
+    }
+    if len(parts) == 0 { q = task  return }
+    q = join(parts, " ")
+}
+
 // context_seed runs search for the task; prefers hybrid only when vectors exist
 // and mode asks for it — otherwise lexical (localhost-safe default).
 func context_seed(task, limit, mode) (hits, used_mode, err) {
@@ -30,12 +100,34 @@ func context_seed(task, limit, mode) (hits, used_mode, err) {
     if mode == "auto" {
         if live_vec_count() > 0 { used_mode = "hybrid" } else { used_mode = "lexical" }
     }
-    hits, err = search_dispatch(task, limit, used_mode)
+    q := content_query(task)
+    hits, err = search_dispatch(q, limit, used_mode)
     // hybrid/semantic embed failure → fall back to lexical
     if err == 88 || err == 89 {
-        hits = bm25_search(task, limit)
+        hits = bm25_search(q, limit)
         used_mode = "lexical"
         err = 0
+    }
+    // re-rank seeds: path + term coverage so distinctive query words win
+    // (dogfood: "machin encode" must beat docs that only match stopwordy BM25)
+    if err == 0 && len(hits) > 1 {
+        i := 0
+        while i < len(hits) {
+            hits[i].score = hits[i].score + path_boost(hits[i].doc, task)
+            c1, ok1 := chunk_by_id(hits[i].chunk)
+            if ok1 { hits[i].score = hits[i].score + term_coverage(c1.text, task) * 3.0 }
+            i = i + 1
+        }
+        // simple insertion sort by score desc, then chunk id
+        j := 1
+        while j < len(hits) {
+            k := j
+            while k > 0 && (hits[k].score > hits[k - 1].score || (hits[k].score == hits[k - 1].score && hits[k].chunk < hits[k - 1].chunk)) {
+                t := hits[k]  hits[k] = hits[k - 1]  hits[k - 1] = t
+                k = k - 1
+            }
+            j = j + 1
+        }
     }
 }
 
@@ -163,6 +255,11 @@ func build_context(task, budget, seeds, depth, mode) (pack, err) {
             if has(picked, id) { continue }
             sc := 0.0
             if has(seed_score, id) { sc = seed_score[id] }
+            c0, ok0 := chunk_by_id(id)
+            if ok0 {
+                sc = sc + path_boost(c0.doc, task)
+                sc = sc + term_coverage(c0.text, task)
+            }
             if best == "" || sc > best_sc || (sc == best_sc && id < best) {
                 best = id
                 best_sc = sc

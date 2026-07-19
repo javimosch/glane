@@ -13,7 +13,7 @@
 //   89 GLANE_NO_VECTORS semantic search requested but vector cache empty
 //   90 GLANE_FORGET_MISS forget selector matches nothing live
 
-var glane_version = "0.6.0"
+var glane_version = "0.7.0"
 
 // fail prints a typed error JSON on stdout (data channel) and exits.
 func fail(exitcode, code, msg, recoverable, suggestions) {

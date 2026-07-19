@@ -12,16 +12,16 @@
 | **M3** | `log` / `diff` / `forget` generations |
 | **M4** | `context` packs + sequential HTTP/MCP `serve` |
 | **M5** | launch polish: README, llms.txt, vs-Cognee note, changelog, bench includes `context_ms` |
+| **M6** | RAG quality loop: imports/calls + `glane-parse-*` plugins, `glane eval` (gold hit@context ≥98%), vector GC on forget, path-boosted context |
 
 ## Near-term (self-hosted)
 
 Priority order — pick when needed, not a forced queue:
 
 1. **Ops ergonomics** — `update` verb (cli-specs), release binaries, install script
-2. **Richer extractors** — `glane-parse-*` plugin exec protocol; deeper code symbols
-3. **Bulk embed path** — same OpenAI contract, uncapped only against a dedicated box you control (e.g. rbm21); keep laptop hard-cap
-4. **Store backend** — optional grange-backed collections (dogfood) behind the same CLI
-5. **Hardening** — time-travel reads (`status --at`), vector GC on forget, larger bench profiles still sequential/CPU-capped
+2. **Bulk embed path** — `GLANE_EMBED_HARD_MAX` raises the per-run cap on localhost; still no remote hosts. Further: uncapped dedicated-box presets (e.g. rbm21)
+3. **Store backend** — optional grange-backed collections (dogfood) behind the same CLI
+4. **Hardening** — time-travel reads (`status --at`), larger bench profiles still sequential/CPU-capped
 
 ## Explicitly out of scope (for now)
 
